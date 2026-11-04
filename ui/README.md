@@ -15,5 +15,5 @@
 剪贴板页启用 universalClipboard；连接后自动接收手机文件，文件页可设置接收目录（连接时生效）和发送文件；通知页接收手机通知。
 相机页选择镜头和尺寸，可输出到已有的 v4l2loopback 节点。
 
-每次启动生成 `artifacts/hyperclix/logs/app-*.log`（结构化业务日志）和 `native-*.log`（GTK/libav/ALSA 原始 stderr）；运行日志页打开 app 文件。
-图片及文件剪贴板缓存位于 `artifacts/hyperclix/clipboard-cache/`。
+每次启动生成 `$XDG_STATE_HOME/hyperclix/logs/app-*.log`（结构化业务日志）和 `native-*.log`（GTK/libav/ALSA 原始 stderr）；运行日志页打开 app 文件。
+账号和接收文件在 `$XDG_DATA_HOME/hyperclix/`，剪贴板缓存在 `$XDG_CACHE_HOME/hyperclix/clipboard/`。

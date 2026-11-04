@@ -10,8 +10,6 @@ pub(crate) const TYPE_DRAG: u8 = 8;
 pub(crate) const TYPE_SCREEN_COMMAND: u8 = 12;
 pub(crate) const TYPE_AUDIO_FOCUS: u8 = 46;
 pub(crate) const TYPE_APP_COMMAND: u8 = 62;
-pub(crate) const TYPE_SEARCH_APP: u8 = 35;
-pub(crate) const TYPE_SEARCH_APP_RESPONSE: u8 = 36;
 pub(crate) const TYPE_RECENT_APPS: u8 = 72;
 pub(crate) const TYPE_VOLUME_SET: u8 = 53;
 pub(crate) const TYPE_VOLUME_BASIS: u8 = 54;
@@ -416,38 +414,6 @@ impl DragMessage {
         }
         frame(TYPE_DRAG, &payload)
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SearchAppRequest {
-    pub session_id: u64,
-    pub keyword: String,
-}
-
-impl SearchAppRequest {
-    pub(crate) fn encode(&self) -> Vec<u8> {
-        let mut body = Writer::new();
-        body.varint(1, self.session_id);
-        body.bytes(2, self.keyword.as_bytes());
-        frame(TYPE_SEARCH_APP, &body.finish())
-    }
-}
-
-pub(crate) fn decode_search_response(payload: &[u8], session_id: u64) -> Result<Vec<RecentApp>> {
-    let response = Fields::decode(payload)?;
-    ensure!(
-        response.uint(1) == session_id || response.uint(1) == 0,
-        "unexpected search-app session"
-    );
-    Ok(response
-        .repeated_message::<Fields>(2)?
-        .into_iter()
-        .map(|app| RecentApp {
-            package: app.text(1),
-            name: app.text(2),
-            icon: app.bytes(3).to_vec(),
-        })
-        .collect())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

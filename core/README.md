@@ -60,7 +60,7 @@ App 默认 720×1280、density 320；相机默认后置 1280×720；音频设备
 典型顺序：加载账号 → 发现手机 → 建立 Session → 打开业务 → 消费事件／视频帧。
 关闭顺序：`MediaPlayer::close` → 对应业务 `close` → `Session::close`。
 
-日志位于 `artifacts/hyperclix/logs/`：`app-*.log` 保存结构化业务阶段与媒体状态，`native-*.log` 保存 libav/GTK 原始 stderr。
+日志位于 `$XDG_STATE_HOME/hyperclix/logs/`：`app-*.log` 保存结构化业务阶段与媒体状态，`native-*.log` 保存 libav/GTK 原始 stderr。
 
 后台宿主：`cargo run --release -p hyperclix-core --bin hyperclix-service -- --interface wlp1s0`。
 无局域网后台使用 `--listen-ble`；`--apps <手机IPv4>` 读取局域网手机的最近应用。

@@ -26,7 +26,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const DEFAULT_ACCOUNT_DIR: &str = "artifacts/hyperclix/account-session";
+pub fn default_account_dir() -> std::path::PathBuf {
+    crate::paths::account_dir()
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Credentials {

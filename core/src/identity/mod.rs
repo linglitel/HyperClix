@@ -4,6 +4,6 @@ mod certificate;
 mod http;
 pub mod qr;
 
-pub use account::{Account, Credentials, DEFAULT_ACCOUNT_DIR};
+pub use account::{Account, Credentials, default_account_dir};
 pub use certificate::device_subject;
 pub use qr::QrLogin;

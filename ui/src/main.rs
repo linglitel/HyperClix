@@ -147,14 +147,6 @@ struct Ui {
     notification_list: gtk::ListBox,
     notification_status: gtk::Label,
 }
-fn root_path(relative: &str) -> String {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join(relative)
-        .to_string_lossy()
-        .into_owned()
-}
 fn entry(text: &str, placeholder: &str) -> gtk::Entry {
     gtk::Entry::builder()
         .text(text)
@@ -291,7 +283,7 @@ impl Ui {
         );
         let account_card = card();
         let account_path = entry(
-            &root_path("artifacts/hyperclix/account-session"),
+            &hyperclix_core::paths::account_dir().to_string_lossy(),
             "账号与设备证书目录",
         );
         account_card.append(&row("本机身份", &account_path));
@@ -428,7 +420,7 @@ impl Ui {
                 package_choice.set_text(&app.package);
             }
         });
-        let load_apps = button("加载完整应用列表", false);
+        let load_apps = button("加载最近应用", false);
         let open_app = button("打开独立 App", true);
         apps.append(&actions(&[&load_apps, &open_app]));
         desktop.append(&apps);
@@ -462,7 +454,10 @@ impl Ui {
         let choose = button("选择文件", false);
         let send_files = button("发送到手机", true);
         filecard.append(&actions(&[&choose, &send_files]));
-        let destination = entry(&root_path("artifacts/hyperclix/received"), "接收文件夹");
+        let destination = entry(
+            &hyperclix_core::paths::received_dir().to_string_lossy(),
+            "接收文件夹",
+        );
         filecard.append(&row("接收目录", &destination));
         let cancel = button("取消当前任务", false);
         filecard.append(&cancel);
@@ -509,12 +504,12 @@ impl Ui {
         let packages = entry("com.tencent.mm", "包名以逗号分隔");
         notification_card.append(&row("应用包名", &packages));
         let cloud_path = entry(
-            &root_path("artifacts/hyperclix/account-micloud"),
+            &hyperclix_core::paths::cloud_dir().to_string_lossy(),
             "micloud 授权目录",
         );
         notification_card.append(&row("云账号目录", &cloud_path));
         let push_path = entry(
-            &root_path("artifacts/hyperclix/push/runtime.private.json"),
+            &hyperclix_core::paths::push_path().to_string_lossy(),
             "自有 MiPush runtime 文件",
         );
         notification_card.append(&row("推送身份", &push_path));
@@ -541,7 +536,10 @@ impl Ui {
         app_input.append(&push_app);
         app_input.append(&choose_push_app);
         reg.append(&row("应用凭据文件", &app_input));
-        let cloud_state = entry(&root_path("artifacts/hyperclix/cloud"), "云设备状态目录");
+        let cloud_state = entry(
+            &hyperclix_core::paths::cloud_state_dir().to_string_lossy(),
+            "云设备状态目录",
+        );
         reg.append(&row("云设备目录", &cloud_state));
         let register_push = button("登记推送身份", false);
         let register_cloud = button("登记云设备", false);
@@ -1254,7 +1252,7 @@ impl Ui {
             return;
         };
         self.run_session("加载应用列表", async move {
-            Ok(Event::Apps(session.all_apps().await))
+            Ok(Event::Apps(session.recent_apps().await))
         });
     }
 
@@ -1270,7 +1268,7 @@ impl Ui {
             let tx = self.tx.clone();
             self.run_session("开启剪贴板", async move {
                 let operation = async {
-                    let cache = PathBuf::from(root_path("artifacts/hyperclix/clipboard-cache"));
+                    let cache = hyperclix_core::paths::clipboard_cache_dir();
                     let clip = Clipboard::open_with_cache(&session, &cache).await?;
                     match SelectionMonitor::start(clip.clone(), tx, cache).await {
                         Ok(monitor) => Ok(Event::Clipboard(clip, monitor)),
@@ -1986,7 +1984,7 @@ impl Ui {
                     let refs: Vec<&str> = names.iter().map(String::as_str).collect();
                     self.app_names.splice(0, self.app_names.n_items(), &refs);
                     self.app_cache.replace(apps);
-                    self.append_log(&format!("已加载 {} 个手机应用", names.len()));
+                    self.append_log(&format!("已加载 {} 个最近应用", names.len()));
                 }
                 Err(error) => self.error(&format!("加载应用列表：{error:#}")),
             },
@@ -2366,7 +2364,7 @@ fn format_bytes(n: u64) -> String {
 }
 
 fn main() -> glib::ExitCode {
-    if let Err(error) = logging::start(root_path("artifacts/hyperclix/logs")) {
+    if let Err(error) = logging::start(hyperclix_core::paths::logs_dir()) {
         eprintln!("创建磁盘日志失败：{error:#}");
     }
     let runtime = Arc::new(Runtime::new().expect("create network runtime"));

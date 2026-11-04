@@ -5,19 +5,13 @@
 //! with repeated channel setup and was the remaining lifecycle divergence from
 //! the official client.
 
-use std::{
-    sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
-};
+use std::time::Duration;
 
-use anyhow::{Context, bail, ensure};
+use anyhow::{Context, bail};
 
 use crate::{
     Result,
-    protocol::messages::mirror::{
-        FrameDecoder, RecentApp, RecentAppsRequest, SearchAppRequest, TYPE_RECENT_APPS,
-        TYPE_SEARCH_APP_RESPONSE, decode_search_response,
-    },
+    protocol::messages::mirror::{FrameDecoder, RecentApp, RecentAppsRequest, TYPE_RECENT_APPS},
     session::{Channel, ChannelEvent, SdkPlatform, Session},
 };
 
@@ -32,64 +26,32 @@ pub struct PhoneApp {
     pub icon: Vec<u8>,
 }
 
-#[derive(Clone, Copy)]
-enum AppChannel {
-    Recent,
-    Cast,
-}
-
 #[derive(Default)]
 struct AppRuntime {
-    recent: tokio::sync::Mutex<Option<Channel>>,
-    cast: tokio::sync::Mutex<Option<Channel>>,
-    session: AtomicU64,
+    channel: tokio::sync::Mutex<Option<Channel>>,
 }
 
 impl AppRuntime {
-    fn next_session(&self) -> u64 {
-        self.session.fetch_add(1, Ordering::SeqCst) + 1
-    }
-
-    async fn channel(&self, session: &Session, kind: AppChannel) -> Result<Channel> {
-        let slot = match kind {
-            AppChannel::Recent => &self.recent,
-            AppChannel::Cast => &self.cast,
-        };
-        let mut slot = slot.lock().await;
+    async fn channel(&self, session: &Session) -> Result<Channel> {
+        let mut slot = self.channel.lock().await;
         if let Some(channel) = slot.as_ref().filter(|channel| !channel.is_closed()) {
             return Ok(channel.clone());
         }
         *slot = None;
-        let channel = match kind {
-            AppChannel::Recent => {
-                session
-                    .open_channel(
-                        RECENT_APPS_SERVICE,
-                        crate::session::TRUST_PAIR,
-                        SdkPlatform::Linux,
-                    )
-                    .await?
-            }
-            AppChannel::Cast => session.open_cast().await?,
-        };
-        tracing::info!(
-            "[apps] opened shared {} channel id={}",
-            match kind {
-                AppChannel::Recent => "recent-apps",
-                AppChannel::Cast => "mirror",
-            },
-            channel.id()
-        );
+        let channel = session
+            .open_channel(
+                RECENT_APPS_SERVICE,
+                crate::session::TRUST_PAIR,
+                SdkPlatform::Linux,
+            )
+            .await?;
+        tracing::info!("[apps] opened app channel id={}", channel.id());
         *slot = Some(channel.clone());
         Ok(channel)
     }
 
-    async fn invalidate(&self, channel: &Channel, kind: AppChannel) {
-        let slot = match kind {
-            AppChannel::Recent => &self.recent,
-            AppChannel::Cast => &self.cast,
-        };
-        let mut slot = slot.lock().await;
+    async fn invalidate(&self, channel: &Channel) {
+        let mut slot = self.channel.lock().await;
         if slot
             .as_ref()
             .is_some_and(|value| value.id() == channel.id())
@@ -104,13 +66,20 @@ impl AppRuntime {
         session: &Session,
         packet: Vec<u8>,
         response_type: u8,
-        kind: AppChannel,
     ) -> Result<Vec<u8>> {
         for attempt in 0..2 {
-            let channel = self.channel(session, kind).await?;
+            let channel = tokio::time::timeout(RESPONSE_TIMEOUT, self.channel(session))
+                .await
+                .context("打开应用通道超时")??;
             let mut incoming = channel.subscribe();
+            tracing::info!(
+                "[apps] send type={} bytes={} channel={}",
+                packet.first().copied().unwrap_or(0),
+                packet.len(),
+                channel.id()
+            );
             if let Err(error) = channel.send(&packet).await {
-                self.invalidate(&channel, kind).await;
+                self.invalidate(&channel).await;
                 if attempt == 0 {
                     continue;
                 }
@@ -125,6 +94,12 @@ impl AppRuntime {
                         ChannelEvent::Closed(reason) => bail!("应用列表通道已关闭：{reason}"),
                     };
                     for frame in decoder.feed(&bytes)? {
+                        tracing::info!(
+                            "[apps] recv type={} bytes={} channel={}",
+                            frame.message_type,
+                            frame.payload.len(),
+                            channel.id()
+                        );
                         if frame.message_type == response_type {
                             return Ok(frame.payload);
                         }
@@ -138,7 +113,7 @@ impl AppRuntime {
                 Ok(payload) => return Ok(payload),
                 Err(error) => {
                     let closed = channel.is_closed();
-                    self.invalidate(&channel, kind).await;
+                    self.invalidate(&channel).await;
                     if attempt == 0 && closed {
                         continue;
                     }
@@ -166,51 +141,9 @@ impl Session {
     pub async fn recent_apps(&self) -> Result<Vec<PhoneApp>> {
         let runtime = self.extension::<AppRuntime>();
         let packet = RecentAppsRequest.encode();
-        let payload = runtime
-            .request(self, packet, TYPE_RECENT_APPS, AppChannel::Recent)
-            .await?;
+        let payload = runtime.request(self, packet, TYPE_RECENT_APPS).await?;
         let apps = RecentAppsRequest::decode_response(&payload)?;
         tracing::info!("[apps] recent count={}", apps.len());
         Ok(phone_apps(apps))
-    }
-
-    /// Search the phone's installed apps. The special keyword `*` returns the
-    /// complete list, matching the phone's `AppSearchHelper` wildcard path.
-    pub async fn search_apps(&self, keyword: &str) -> Result<Vec<PhoneApp>> {
-        ensure!(!keyword.trim().is_empty(), "应用搜索关键字不能为空");
-        let runtime = self.extension::<AppRuntime>();
-        let session_id = runtime.next_session();
-        let packet = SearchAppRequest {
-            session_id,
-            keyword: keyword.to_owned(),
-        }
-        .encode();
-        let payload = match runtime
-            .request(
-                self,
-                packet.clone(),
-                TYPE_SEARCH_APP_RESPONSE,
-                AppChannel::Cast,
-            )
-            .await
-        {
-            Ok(payload) => payload,
-            Err(cast_error) => {
-                tracing::info!(
-                    "[apps] mirror channel search failed, retrying recent-apps: {cast_error:#}"
-                );
-                runtime
-                    .request(self, packet, TYPE_SEARCH_APP_RESPONSE, AppChannel::Recent)
-                    .await?
-            }
-        };
-        let apps = decode_search_response(&payload, session_id)?;
-        tracing::info!("[apps] search keyword={keyword:?} count={}", apps.len());
-        Ok(phone_apps(apps))
-    }
-
-    /// Complete installed-app list via the phone's wildcard app search.
-    pub async fn all_apps(&self) -> Result<Vec<PhoneApp>> {
-        self.search_apps("*").await
     }
 }

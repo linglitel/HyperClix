@@ -75,21 +75,69 @@ pub fn interfaces() -> Result<Vec<NetworkInterface>> {
 
 /// Discover current phone IP/KCP endpoints. The SRV port is not the KCP port.
 pub async fn discover(local_ip: Ipv4Addr, duration: Duration) -> Result<Vec<DeviceEndpoint>> {
-    let socket = multicast_socket(local_ip, false)?;
+    tracing::info!(
+        "mDNS discovery start: local_ip={local_ip}, duration_ms={}",
+        duration.as_millis()
+    );
+    let socket = multicast_socket(local_ip, true)
+        .with_context(|| format!("创建 mDNS 套接字失败 local_ip={local_ip}"))?;
+    tracing::info!("mDNS socket bound: local={:?}", socket.local_addr());
     let query = query();
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
     let deadline = tokio::time::sleep(duration);
     tokio::pin!(deadline);
     let mut response = Responses::default();
     let mut buffer = vec![0; 65535];
+    let mut queries = 0u32;
+    let mut packets = 0u32;
     loop {
         tokio::select! {
             _=&mut deadline=>break,
-            _=ticker.tick()=>{socket.send_to(&query,(Ipv4Addr::new(224,0,0,251),5353)).await?;},
-            received=socket.recv_from(&mut buffer)=>{let (n,source)=received?;response.add(&buffer[..n],source)?;}
+            _=ticker.tick()=>{
+                match socket.send_to(&query,(Ipv4Addr::new(224,0,0,251),5353)).await {
+                    Ok(sent) => {
+                        queries += 1;
+                        tracing::info!("mDNS query sent: bytes={sent}, count={queries}, group=224.0.0.251:5353, iface={local_ip}");
+                    }
+                    Err(error) => tracing::warn!("mDNS query send failed: {error:#}"),
+                }
+            },
+            received=socket.recv_from(&mut buffer)=>{
+                match received {
+                    Ok((n,source)) => {
+                        packets += 1;
+                        tracing::info!("mDNS packet received: source={source}, bytes={n}, count={packets}");
+                        if let Err(error)=response.add(&buffer[..n],source) {
+                            tracing::warn!("mDNS packet ignored: source={source}, error={error:#}");
+                        }
+                    }
+                    Err(error) => tracing::warn!("mDNS receive failed: {error:#}"),
+                }
+            }
         }
     }
-    response.devices(local_ip)
+    let devices = response.devices(local_ip)?;
+    for device in &devices {
+        tracing::info!(
+            "mDNS device: name={:?}, ip={}, port={}, type={}, instance={}",
+            device.name,
+            device.ip,
+            device.port,
+            device.device_type,
+            device.instance
+        );
+    }
+    if devices.is_empty() {
+        tracing::warn!(
+            "mDNS discovery finished without a peer: queries={queries}, packets={packets}; multicast may be blocked or the phone did not answer; use BLE discovery"
+        );
+    } else {
+        tracing::info!(
+            "mDNS discovery finished: queries={queries}, packets={packets}, devices={}",
+            devices.len()
+        );
+    }
+    Ok(devices)
 }
 
 fn multicast_socket(local_ip: Ipv4Addr, listen: bool) -> Result<UdpSocket> {
@@ -128,7 +176,7 @@ fn name(out: &mut Vec<u8>, value: &str) {
 fn query() -> Vec<u8> {
     let mut out = vec![0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
     name(&mut out, SERVICE);
-    out.extend([0, 12, 128, 1]);
+    out.extend([0, 12, 0, 1]);
     out
 }
 

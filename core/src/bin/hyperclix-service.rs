@@ -1,9 +1,9 @@
 //! Headless host for the core's local presence and file receiver.
 use anyhow::{Context, bail};
 use hyperclix_core::{
-    Account, ConnectOptions, DEFAULT_ACCOUNT_DIR, DEFAULT_DEVICE_NAME, Result, Server,
-    ServerOptions, Session, SessionEvent, discovery,
-    mishare::MiShare,
+    Account, ConnectOptions, DEFAULT_DEVICE_NAME, Result, Server, ServerOptions, Session,
+    SessionEvent, default_account_dir, discovery,
+    mishare::{MiShare, TransferEvent},
     proximity::{BleListenerOptions, NearbyScanner, UpgradeClient},
 };
 use std::{net::Ipv4Addr, path::PathBuf, sync::Arc, time::Duration};
@@ -13,20 +13,37 @@ fn argument(args: &[String], name: &str) -> Option<String> {
         .find(|item| item[0] == name)
         .map(|item| item[1].clone())
 }
+fn endpoint_for(args: &[String], local: Ipv4Addr) -> Result<Option<discovery::DeviceEndpoint>> {
+    if let Some(endpoint) = argument(args, "--endpoint") {
+        let (ip, port) = endpoint
+            .rsplit_once(':')
+            .context("--endpoint 需要 IP:端口")?;
+        return Ok(Some(discovery::DeviceEndpoint::new(
+            local,
+            ip.parse()?,
+            port.parse()?,
+        )));
+    }
+    Ok(None)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|arg| arg == "--help") {
         println!(
-            "hyperclix-service [--account <目录>] [--name <名称>]\n  --interface <网卡> 启动局域网后台，可加 --receive-dir <目录>\n  --listen-ble 允许手机通过 BLE 主动连接，可与局域网后台同时开启\n  --interface <网卡> --apps <手机IPv4> 读取最近应用及图标\n  --nearby 扫描 BLE，无需局域网\n  --ble-connect 认证唯一同账号近场设备；可加 --p2p-interface <无线接口> 升级链路，--recent-apps 读取最近应用，--reconnect 按回车关闭并重连"
+            "hyperclix-service [--account <目录>] [--name <名称>]\n  --interface <网卡> 启动局域网后台，可加 --receive-dir <目录>\n  --listen-ble 允许手机通过 BLE 主动连接，可与局域网后台同时开启\n  --interface <网卡> --apps <手机IPv4> 读取最近应用及图标\n  --nearby 扫描 BLE，无需局域网\n  --ble-connect 认证唯一同账号近场设备；可加 --p2p-interface <无线接口> 升级链路，--recent-apps 读取最近应用，--send-file <文件> 发送文件到手机，--endpoint <IP:端口> 跳过发现直连，--reconnect 按回车关闭并重连"
         );
         return Ok(());
     }
-    let log = hyperclix_core::logging::init("artifacts/hyperclix/logs", "HyperClix service")?;
+    let log =
+        hyperclix_core::logging::init(hyperclix_core::paths::logs_dir(), "HyperClix service")?;
     println!("核心服务日志：{}", log.display());
-    let account =
-        Account::load(argument(&args, "--account").unwrap_or_else(|| DEFAULT_ACCOUNT_DIR.into()))
-            .await?;
+    let account = Account::load(
+        argument(&args, "--account")
+            .unwrap_or_else(|| default_account_dir().to_string_lossy().into_owned()),
+    )
+    .await?;
     let mut options = ConnectOptions {
         device_name: argument(&args, "--name").unwrap_or_else(|| DEFAULT_DEVICE_NAME.into()),
         ..Default::default()
@@ -127,17 +144,74 @@ async fn main() -> Result<()> {
     } else {
         Ipv4Addr::UNSPECIFIED
     };
+    if let Some(file) = argument(&args, "--send-file") {
+        anyhow::ensure!(
+            !local.is_unspecified(),
+            "发送文件请指定 --interface 和 --apps <手机IPv4>"
+        );
+        let phone: Ipv4Addr = argument(&args, "--apps")
+            .context("发送文件需要 --apps <手机IPv4>")?
+            .parse()?;
+        let endpoint = if let Some(endpoint) = endpoint_for(&args, local)? {
+            endpoint
+        } else {
+            discovery::discover(local, Duration::from_secs(4))
+                .await?
+                .into_iter()
+                .find(|item| item.ip == phone)
+                .context("当前发现结果中没有这台手机")?
+        };
+        let session = Session::connect(&account, &endpoint, options).await?;
+        let task = MiShare::new(session.clone(), DEFAULT_DEVICE_NAME)
+            .send_files(vec![PathBuf::from(file)]);
+        let mut events = task.subscribe();
+        let result = tokio::time::timeout(Duration::from_secs(120), async {
+            loop {
+                match events.recv().await {
+                    Ok(event) => {
+                        tracing::info!("[service] send event: {event:?}");
+                        if matches!(
+                            event,
+                            TransferEvent::Complete(_)
+                                | TransferEvent::Failed(_)
+                                | TransferEvent::Cancelled
+                        ) {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                }
+            }
+            task.wait().await
+        })
+        .await
+        .context("发送文件超时")?;
+        let close = session.close().await;
+        let summary = result?;
+        close?;
+        println!(
+            "发送完成：{} 个文件，{} 字节",
+            summary.files.len(),
+            summary.bytes
+        );
+        return Ok(());
+    }
     if let Some(phone) = argument(&args, "--apps") {
         anyhow::ensure!(
             !local.is_unspecified(),
             "局域网读取请指定 --interface；近场读取使用 --ble-connect --p2p-interface <设备> --recent-apps"
         );
         let phone: Ipv4Addr = phone.parse()?;
-        let endpoint = discovery::discover(local, Duration::from_secs(4))
-            .await?
-            .into_iter()
-            .find(|item| item.ip == phone)
-            .context("当前发现结果中没有这台手机")?;
+        let endpoint = if let Some(endpoint) = endpoint_for(&args, local)? {
+            endpoint
+        } else {
+            discovery::discover(local, Duration::from_secs(4))
+                .await?
+                .into_iter()
+                .find(|item| item.ip == phone)
+                .context("当前发现结果中没有这台手机")?
+        };
         let session = Session::connect(&account, &endpoint, options).await?;
         let result = session.recent_apps().await;
         let close = session.close().await;
@@ -152,7 +226,7 @@ async fn main() -> Result<()> {
     }
     let directory = argument(&args, "--receive-dir")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("artifacts/hyperclix/inbox"));
+        .unwrap_or_else(|| hyperclix_core::paths::received_dir());
     let mut server = Server::start(
         &account,
         ServerOptions {
