@@ -1,0 +1,19 @@
+# Vendor packages, extracted binaries, and device captures stay local.
+artifacts/
+captures/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Account credentials and local configuration.
+.env
+.env.*
+!.env.example
+local-config.json
+
+# Rust build output and runtime screenshots.
+target/
