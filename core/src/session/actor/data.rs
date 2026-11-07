@@ -145,11 +145,38 @@ impl PhysicalActor {
             data.len(),
             hex::encode(&data[..data.len().min(80)])
         );
-        if let Ok(control) = ChannelControl::decode(data)
-            && let ChannelBody::PeerPortRequest { id, key, .. } = control.body
-        {
-            self.respond_peer_port(c, id, &key).await?;
-            return Ok(());
+        if let Ok(control) = ChannelControl::decode(data) {
+            match control.body {
+                ChannelBody::PeerPortRequest { id, key, .. } if !c.outgoing => {
+                    self.respond_peer_port(c, id, &key).await?;
+                    return Ok(());
+                }
+                ChannelBody::PeerPortResponse {
+                    request_id,
+                    sdk_id,
+                    port,
+                    ..
+                } if c.outgoing => {
+                    ensure!(request_id == c.sdk_id as u64, "PeerPort未回显本地通道ID");
+                    let socket = UdpSocket::bind((self.session.local_ip(), 0)).await?;
+                    let channel = self.spawn_media(
+                        c,
+                        socket,
+                        Some(SocketAddr::from((self.session.peer_ip(), port))),
+                        sdk_id,
+                        false,
+                    )?;
+                    c.channel = Some(channel);
+                    tracing::info!(
+                        target: "session",
+                        "[session] hardware-service PeerPortResponse port={} sdk_id={}",
+                        port,
+                        sdk_id
+                    );
+                    return Ok(());
+                }
+                _ => {}
+            }
         }
         let response = match CameraResponse::decode(data) {
             Ok(response) => response,
