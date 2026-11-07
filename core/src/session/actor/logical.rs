@@ -6,6 +6,7 @@ use crate::{
     Result,
     protocol::{
         messages::{
+            camera::{CameraResponse, metadata_response},
             device::NetworkDevice,
             lyra::{
                 LogicalBody, LogicalEnvelope, LogicalFrame, LogicalSync, ServiceRequest,
@@ -15,6 +16,7 @@ use crate::{
         },
         pb::{Fields, Message},
     },
+    session::ChannelEvent,
     transport::auth::Auth,
 };
 use anyhow::{Context, ensure};
@@ -178,6 +180,42 @@ impl PhysicalActor {
         let socket = UdpSocket::bind((self.session.local_ip(), 0)).await?;
         let port = socket.local_addr()?.port();
         let channel = self.spawn_media(c, socket, None, c.sdk_id, true)?;
+        if c.service == crate::protocol::service::CAMERA_METADATA {
+            let channel = channel.clone();
+            let own_id = self.session.account().short_id();
+            let device_type = self.session.account().device_type as u64;
+            tokio::spawn(async move {
+                let mut events = channel.subscribe();
+                loop {
+                    match events.recv().await {
+                        Ok(ChannelEvent::Data(data)) => {
+                            let Ok(request) = CameraResponse::decode(&data) else {
+                                continue;
+                            };
+                            if request.action != 3 {
+                                continue;
+                            }
+                            let response =
+                                metadata_response(&own_id, request.seq_id, device_type, 4, 0);
+                            if let Err(error) = channel.send(&response).await {
+                                tracing::warn!(
+                                    target: "session",
+                                    "[session] reverse hardware response failed: {error:#}"
+                                );
+                                break;
+                            }
+                            tracing::info!(
+                                target: "session",
+                                "[session] reverse hardware RESPONSE seq={} bytes={}",
+                                request.seq_id,
+                                response.len()
+                            );
+                        }
+                        Ok(ChannelEvent::Closed(_)) | Err(_) => break,
+                    }
+                }
+            });
+        }
         c.channel = Some(channel);
         c.sdk_port = Some(port);
         let reply = ChannelControl::peer_port_response(request_id, c.sdk_id, port);
