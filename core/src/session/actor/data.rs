@@ -139,6 +139,12 @@ impl PhysicalActor {
         c: &mut LogicalConnection,
         data: &[u8],
     ) -> Result<()> {
+        tracing::info!(
+            target: "session",
+            "[session] hardware-service bytes={} hex={}",
+            data.len(),
+            hex::encode(&data[..data.len().min(80)])
+        );
         if let Ok(control) = ChannelControl::decode(data)
             && let ChannelBody::PeerPortRequest { id, key, .. } = control.body
         {

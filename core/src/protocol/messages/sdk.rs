@@ -10,6 +10,7 @@ pub(crate) enum ChannelBody {
     PeerPortRequest {
         id: u64,
         version: u64,
+        full: u64,
         key: Vec<u8>,
     },
     PeerPortResponse {
@@ -33,12 +34,13 @@ pub(crate) struct ChannelControl {
 }
 
 impl ChannelControl {
-    pub(crate) fn peer_port_request(id: u64, key: Vec<u8>) -> Self {
+    pub(crate) fn peer_port_request(id: u64, full: u32, key: Vec<u8>) -> Self {
         Self {
             kind: 2,
             body: ChannelBody::PeerPortRequest {
                 id,
                 version: 1,
+                full: full as u64,
                 key,
             },
         }
@@ -58,11 +60,16 @@ impl ChannelControl {
 
     pub(crate) fn encode(&self) -> Vec<u8> {
         let body = match &self.body {
-            ChannelBody::PeerPortRequest { id, version, key } => {
+            ChannelBody::PeerPortRequest {
+                id,
+                version,
+                full,
+                key,
+            } => {
                 let mut writer = Writer::new();
                 writer.varint(1, *id);
                 writer.varint(2, *version);
-                writer.varint(3, 1);
+                writer.varint(3, *full);
                 writer.bytes(4, key);
                 writer.finish()
             }
@@ -99,6 +106,7 @@ impl ChannelControl {
             2 => ChannelBody::PeerPortRequest {
                 id: fields.uint(1),
                 version: fields.uint(2),
+                full: fields.uint(3),
                 key: fields.bytes(4).to_vec(),
             },
             3 => ChannelBody::PeerPortResponse {
@@ -119,7 +127,7 @@ mod tests {
 
     #[test]
     fn peer_port_controls_round_trip() -> Result<()> {
-        let request = ChannelControl::peer_port_request(42, vec![7; 32]);
+        let request = ChannelControl::peer_port_request(42, 1234, vec![7; 32]);
         assert_eq!(ChannelControl::decode(&request.encode())?, request);
         let response = ChannelControl::peer_port_response(7, 42, 5000);
         assert_eq!(ChannelControl::decode(&response.encode())?, response);

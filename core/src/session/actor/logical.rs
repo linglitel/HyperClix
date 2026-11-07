@@ -202,11 +202,25 @@ impl PhysicalActor {
             c.trans_key.len(),
             c.remote
         );
-        let request = ChannelControl::peer_port_request(c.sdk_id as u64, c.trans_key.clone());
-        self.queue_on(
-            c.physical,
-            &sdk::wrap(c.remote, &c.auth.encrypt(&request.encode())?),
-        )
+        let request =
+            ChannelControl::peer_port_request(c.sdk_id as u64, c.full, c.trans_key.clone());
+        let clear = request.encode();
+        tracing::info!(
+            target: "session",
+            "[session] start_sdk clear bytes={} hex={}",
+            clear.len(),
+            hex::encode(&clear)
+        );
+        let encrypted = c.auth.encrypt(&clear)?;
+        let wrapped = sdk::wrap(c.remote, &encrypted);
+        tracing::info!(
+            target: "session",
+            "[session] start_sdk wrapped bytes={} slot={} head={}",
+            wrapped.len(),
+            c.remote,
+            hex::encode(&wrapped[..wrapped.len().min(32)])
+        );
+        self.queue_on(c.physical, &wrapped)
     }
 
     pub(super) fn remember_networking_peer(&mut self, device: &NetworkDevice) -> Result<bool> {
