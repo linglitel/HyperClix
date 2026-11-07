@@ -46,10 +46,53 @@ impl PhysicalActor {
         } else {
             None
         };
-        let Some(full) = local_match.or(inbound_camera) else {
+        let mut candidates = Vec::new();
+        if let Some(full) = local_match {
+            candidates.push(full);
+        }
+        if let Some(full) = inbound_camera
+            && !candidates.contains(&full)
+        {
+            candidates.push(full);
+        }
+        // SDK data from an inbound logical may carry the phone's own slot,
+        // while control frames carry ours. Large metadata frames therefore try
+        // the inbound CAMERA_METADATA connection first; the AEAD tag decides.
+        if frame.kind == DataKind::Sdk && frame.payload.len() > 256 {
+            candidates.reverse();
+        }
+        let mut chosen = None;
+        for full in candidates {
+            let Some(candidate) = self.connections.get(&full) else {
+                continue;
+            };
+            if candidate.physical != physical_id {
+                continue;
+            }
+            let clear = if frame.kind == DataKind::Networking || frame.encrypted {
+                match candidate.auth.decrypt(&frame.payload) {
+                    Ok(clear) => clear,
+                    Err(error) => {
+                        tracing::debug!(
+                            target: "session",
+                            "[session] data frame slot {} candidate full={} service={} decrypt failed: {error:#}",
+                            frame.slot,
+                            full,
+                            candidate.service
+                        );
+                        continue;
+                    }
+                }
+            } else {
+                frame.payload.clone()
+            };
+            chosen = Some((full, clear));
+            break;
+        }
+        let Some((full, clear)) = chosen else {
             tracing::warn!(
                 target: "session",
-                "[session] data frame slot {} matches no connection; known={:?}",
+                "[session] data frame slot {} could not be routed; known={:?}",
                 frame.slot,
                 self.connections
                     .values()
@@ -60,11 +103,6 @@ impl PhysicalActor {
         };
         let mut c = self.connections.remove(&full).unwrap();
         ensure!(c.physical == physical_id, "业务数据到达错误的 Physical");
-        let clear = if frame.kind == DataKind::Networking || frame.encrypted {
-            c.auth.decrypt(&frame.payload)?
-        } else {
-            frame.payload
-        };
         if c.service == NETWORKING {
             let payload = NetworkingPayload::decode(&clear)?;
             let _ = self.session.inner.events.send(SessionEvent::Networking {
