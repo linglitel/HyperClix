@@ -22,16 +22,31 @@ impl PhysicalActor {
     pub(super) async fn receive_data(&mut self, frame: DataFrame, physical_id: u8) -> Result<()> {
         tracing::info!(
             target: "session",
-            "[session] data frame slot={} kind={:?} len={}",
+            "[session] data frame slot={} kind={:?} len={} candidates={:?}",
             frame.slot,
             frame.kind,
-            frame.payload.len()
+            frame.payload.len(),
+            self.connections
+                .values()
+                .filter(|c| c.local == frame.slot || c.remote == frame.slot)
+                .map(|c| (c.local, c.remote, c.service.as_str(), c.outgoing))
+                .collect::<Vec<_>>()
         );
-        let Some(full) = self
+        let local_match = self
             .connections
             .iter()
-            .find_map(|(full, c)| (c.local == frame.slot).then_some(*full))
-        else {
+            .find_map(|(full, c)| (c.local == frame.slot).then_some(*full));
+        let inbound_camera = if frame.kind == DataKind::Sdk {
+            self.connections.iter().find_map(|(full, c)| {
+                (!c.outgoing
+                    && c.service == crate::protocol::service::CAMERA_METADATA
+                    && c.remote == frame.slot)
+                    .then_some(*full)
+            })
+        } else {
+            None
+        };
+        let Some(full) = local_match.or(inbound_camera) else {
             tracing::warn!(
                 target: "session",
                 "[session] data frame slot {} matches no connection; known={:?}",
