@@ -264,13 +264,14 @@ impl Screen {
             ScreenCommand::Desktop.encode()
         };
         tracing::info!(
-            "[screen=pending cast={}] create requested: type={} size={}x{} density={}",
+            "[screen=pending cast={}] create requested: type={} package={:?} size={}x{} density={}",
             screen.inner.channel.id(),
             if screen.inner.package.is_some() {
                 "app"
             } else {
                 "desktop"
             },
+            screen.inner.package,
             options.width,
             options.height,
             options.density

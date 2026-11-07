@@ -1,5 +1,5 @@
 //! Local device identity and published Networking services.
-use super::{ConnectOptions, MEDIUM_LAN, MEDIUM_P2P, random_key};
+use super::{ConnectOptions, MEDIUM_LAN, MEDIUM_LAN1, MEDIUM_P2P, random_key};
 use crate::common::time::epoch_ms;
 use crate::protocol::messages::device::{
     DeviceCredential, DeviceGroup, DeviceService, NetworkDevice, PhysicalDevice,
@@ -97,7 +97,7 @@ pub(super) fn network_device(account: &Account, o: &ConnectOptions) -> Result<Ne
                 .unwrap_or(&o.device_name)
                 .to_owned(),
         ),
-        supported_medium: Some(MEDIUM_LAN),
+        supported_medium: Some(MEDIUM_LAN | MEDIUM_LAN1),
         short_id: Some(account.short_id()),
     })
 }

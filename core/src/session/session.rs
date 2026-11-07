@@ -59,6 +59,12 @@ impl Session {
             result=tokio::time::timeout(options.timeout, waiting)=>match result {
                 Ok(Ok(result))=>{
                     result?;
+                    if let Err(error) = session.publish_camera_services().await {
+                        tracing::warn!(
+                            target: "session",
+                            "[session] publish camera services failed: {error:#}"
+                        );
+                    }
                     if *cancelled.borrow() { let _=session.close().await; anyhow::bail!("连接已取消"); }
                     Ok(session)
                 }
@@ -272,13 +278,17 @@ impl Session {
         Ok(Channel {
             inner,
             lease: Some(Arc::new(CastLease {
-                pool,
                 shared,
                 released: AtomicBool::new(false),
                 initial: Mutex::new(Some(initial)),
                 runtime: tokio::runtime::Handle::current(),
             })),
         })
+    }
+    /// Ask the actor to resend the SDK port request for a channel that the
+    /// phone confirmed only after our first attempt.
+    pub(crate) async fn retry_sdk(&self, full: u32) {
+        let _ = self.inner.commands.send(Command::RetrySdk { full }).await;
     }
     pub(crate) async fn open_channel_with_data(
         &self,
@@ -401,6 +411,16 @@ impl Session {
             .await
             .context("Networking已关闭，无法更新业务服务")?;
         wait.await?
+    }
+    /// Publish the PC-side hardware service after Networking is up. Doing it
+    /// in the initial NetworkDevice makes the phone open a reverse logical
+    /// while the Physical/auth handshake is still in flight.
+    pub async fn publish_camera_services(&self) -> Result<()> {
+        self.set_service("com.milink.service", "distributedHardware", Some(&[]))
+            .await?;
+        self.set_service("com.milink.service", "cameraCommand", Some(&[1, 1, 1, 1]))
+            .await?;
+        Ok(())
     }
     pub async fn close(&self) -> Result<()> {
         let _closing = self.inner.close.lock().await;

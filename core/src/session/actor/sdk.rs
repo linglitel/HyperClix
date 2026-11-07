@@ -11,10 +11,7 @@ use anyhow::{Context, ensure};
 use std::{
     collections::BTreeMap,
     net::{Ipv4Addr, SocketAddr},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex, atomic::AtomicBool},
     time::{Duration, Instant},
 };
 use tokio::{
@@ -35,14 +32,6 @@ impl PhysicalActor {
                     if let Some(c) = self.connections.get_mut(&full) {
                         c.upgrade_query = None;
                     }
-                    // The phone removes its P2P group when the last strong
-                    // Logical closes. The upgraded CAST belongs to the device
-                    // session, independently of its current screen owners.
-                    self.session
-                        .inner
-                        .cast
-                        .session_owned
-                        .store(true, Ordering::Release);
                     self.phase(&format!("P2P CAST SDK已就绪 full={full}"));
                     let _ = upgrade.reply.send(Ok(()));
                 }

@@ -113,6 +113,8 @@ pub(crate) fn hardware_message(
 pub(crate) struct CameraResponse {
     pub own_id: String,
     pub category: String,
+    pub seq_id: u64,
+    pub packet_type: u64,
     pub request_flag: u64,
     pub device_type: u64,
     pub action: u64,
@@ -127,6 +129,8 @@ impl CameraResponse {
         Ok(Self {
             own_id: envelope.text(2),
             category: envelope.text(4),
+            seq_id: envelope.uint(5),
+            packet_type: envelope.uint(6),
             request_flag: envelope.uint(7),
             device_type: body.uint(4),
             action: body.uint(2),
@@ -134,6 +138,38 @@ impl CameraResponse {
             hardware: body.repeated_message(7)?,
         })
     }
+}
+
+/// Response to the phone's hardware metadata request, used by the PC-side
+/// distributedHardware service. The PC exposes no distributed hardware, so the
+/// list is empty; a valid RESPONSE packet is still required for the phone to
+/// keep the service online.
+pub(crate) fn metadata_response(
+    own_id: &str,
+    seq_id: u64,
+    device_type: u64,
+    action: u64,
+    status: u64,
+) -> Vec<u8> {
+    let mut body = Writer::new();
+    body.varint(1, 3000011);
+    body.varint(2, action);
+    body.varint(4, device_type);
+    body.bytes(5, "HardwareService");
+    if status != 0 {
+        body.varint(8, status);
+    }
+    let mut envelope = Writer::new();
+    envelope.varint(1, 1);
+    envelope.bytes(2, own_id);
+    envelope.varint(3, epoch_ms());
+    envelope.bytes(4, METADATA_CATEGORY);
+    if seq_id != 0 {
+        envelope.varint(5, seq_id);
+    }
+    envelope.varint(6, 2);
+    envelope.bytes(8, &body.finish());
+    envelope.finish()
 }
 
 pub(crate) fn hardware_from_response(

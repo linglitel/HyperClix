@@ -64,12 +64,36 @@ pub(super) async fn metadata_exchange(
         }
     })
     .await
-    .context("Camera hardware response timed out")?
+    .with_context(|| format!("Camera hardware action {action} timed out"))?
 }
 
 pub(super) fn select_hardware(data: &[u8], index: usize) -> Result<HardwareInfo> {
     let response = CameraResponse::decode(data)?;
+    for (position, hardware) in response.hardware.iter().enumerate() {
+        tracing::info!(
+            "[camera] exposed hardware[{position}]: id={:?} owner={:?} kind={} type={} device_id={:?} property={:?} attributes={:?}",
+            hardware.id,
+            hardware.owner,
+            hardware.kind,
+            hardware.device_type,
+            hardware.device_id,
+            truncate(&hardware.property),
+            truncate(&hardware.attributes)
+        );
+    }
+    tracing::info!(
+        "[camera] selecting hardware index={index} of {} exposed",
+        response.hardware.len()
+    );
     hardware_from_response(&response, index)
+}
+
+fn truncate(value: &str) -> &str {
+    const LIMIT: usize = 160;
+    if value.len() <= LIMIT {
+        return value;
+    }
+    value.get(..LIMIT).unwrap_or(value)
 }
 
 pub(super) fn cleanup_timeout(options: &super::CameraOptions) -> Duration {

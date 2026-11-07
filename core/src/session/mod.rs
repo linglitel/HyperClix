@@ -33,8 +33,10 @@ pub(crate) use crate::protocol::service::{
 pub(crate) const MEDIUM_BLE: u64 = 2;
 pub(crate) const MEDIUM_P2P: u64 = 32;
 pub(crate) const MEDIUM_LAN: u64 = 128;
+pub(crate) const MEDIUM_LAN1: u64 = 0x100;
 const INCOMING: &[&str] = &[
     crate::protocol::service::CAST,
+    crate::protocol::service::CAMERA_METADATA,
     crate::protocol::service::CAMERA_P2P,
     crate::protocol::service::MISHARE_BASIC,
     crate::protocol::service::MISHARE_TRANSFER,
@@ -140,14 +142,12 @@ pub struct Channel {
 #[derive(Default)]
 struct CastPool {
     current: tokio::sync::Mutex<Option<Arc<CastShared>>>,
-    session_owned: AtomicBool,
 }
 struct CastShared {
     channel: Channel,
     users: AtomicUsize,
 }
 struct CastLease {
-    pool: Arc<CastPool>,
     shared: Arc<CastShared>,
     released: AtomicBool,
     initial: Mutex<Option<broadcast::Receiver<ChannelEvent>>>,
@@ -206,6 +206,9 @@ enum Command {
         reply: oneshot::Sender<Result<()>>,
     },
     CloseChannel(u32, bool, oneshot::Sender<Result<()>>),
+    RetrySdk {
+        full: u32,
+    },
     Close(oneshot::Sender<Result<()>>),
 }
 enum MediaCommand {

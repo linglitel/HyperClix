@@ -1,5 +1,5 @@
 //! SDK byte channels and the shared CAST lease pool.
-use super::{CastLease, CastPool, CastShared, Channel, ChannelEvent, Command, MediaCommand};
+use super::{CastLease, CastShared, Channel, ChannelEvent, Command, MediaCommand};
 use crate::{Result, protocol::messages::media};
 use anyhow::{Context, ensure};
 use std::{
@@ -8,33 +8,25 @@ use std::{
 };
 use tokio::sync::{broadcast, oneshot};
 
-async fn release_cast(pool: &CastPool, shared: &Arc<CastShared>) -> Result<()> {
-    let mut current = pool.current.lock().await;
+async fn release_cast(shared: &Arc<CastShared>) -> Result<()> {
     if shared.users.fetch_sub(1, Ordering::AcqRel) == 1 {
-        if pool.session_owned.load(Ordering::Acquire) {
-            tracing::info!(
-                "[cast={}] last screen released; retaining CAST for near-field session",
-                shared.channel.id()
-            );
-            return Ok(());
-        }
-        if current
-            .as_ref()
-            .is_some_and(|active| Arc::ptr_eq(active, shared))
-        {
-            *current = None;
-        }
-        shared.channel.close_transport().await?;
+        // The official ChannelsManager keeps one CAST channel per device
+        // session and replays cached screen messages. Closing it after the
+        // last screen makes the next create wait for a response that OS4
+        // routes to the old logical channel.
+        tracing::info!(
+            "[cast={}] last screen released; retaining CAST for device session",
+            shared.channel.id()
+        );
     }
     Ok(())
 }
 impl Drop for CastLease {
     fn drop(&mut self) {
         if !self.released.swap(true, Ordering::AcqRel) {
-            let pool = self.pool.clone();
             let shared = self.shared.clone();
             self.runtime.spawn(async move {
-                let _ = release_cast(&pool, &shared).await;
+                let _ = release_cast(&shared).await;
             });
         }
     }
@@ -95,7 +87,7 @@ impl Channel {
             if lease.released.swap(true, Ordering::AcqRel) {
                 return Ok(());
             }
-            return release_cast(&lease.pool, &lease.shared).await;
+            return release_cast(&lease.shared).await;
         }
         self.close_transport().await
     }

@@ -158,9 +158,12 @@ async fn refresh(
 }
 
 async fn open_fresh(session: &Session, options: &CameraOptions) -> Result<CameraHardware> {
-    let own_id =
-        hex::encode_upper(Sha256::digest(session.account().device_id.as_bytes()))[..8].to_owned();
+    let digest = hex::encode_upper(Sha256::digest(session.account().device_id.as_bytes()));
+    let own_id = digest[..8].to_owned();
     let device_type = session.account().device_type as u64;
+    tracing::info!(
+        "[camera] sender identity: short={own_id} full={digest} device_type={device_type}"
+    );
     tracing::info!("[camera] opening metadata channel");
     let channel = session
         .open_channel(METADATA_SERVICE, TRUST_PAIR, SdkPlatform::Linux)
@@ -210,15 +213,15 @@ async fn bind(
     info: &HardwareInfo,
     timeout: Duration,
 ) -> Result<()> {
-    metadata_exchange(
-        channel,
-        rx,
-        &hardware_message(own_id, info, device_type, 5),
-        6,
-        timeout,
-    )
-    .await
-    .with_context(|| format!("绑定手机相机硬件 {}", info.id))?;
+    let packet = hardware_message(own_id, info, device_type, 5);
+    tracing::info!(
+        "[camera] SETDEFAULT packet bytes={} hex={}",
+        packet.len(),
+        hex::encode(&packet)
+    );
+    metadata_exchange(channel, rx, &packet, 6, timeout)
+        .await
+        .with_context(|| format!("绑定手机相机硬件 {}", info.id))?;
     tracing::info!("[camera] hardware association ready id={}", info.id);
     Ok(())
 }

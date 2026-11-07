@@ -170,8 +170,9 @@ impl PhysicalActor {
         })
     }
     fn phase(&self, value: &str) {
-        // UI/service consume SessionEvent::Phase through tracing; logging here
-        // would duplicate every line.
+        // The UI log pane consumes tracing directly; also keep the structured
+        // event for the headless service and feature code.
+        tracing::info!(target: "session", "[session] {value}");
         let _ = self
             .session
             .inner

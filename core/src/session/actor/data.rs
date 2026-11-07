@@ -1,11 +1,12 @@
 //! Networking and SDK data-plane dispatch.
 use super::super::{NETWORKING, SessionEvent};
-use super::PhysicalActor;
 use super::logical::network_transport;
+use super::{LogicalConnection, PhysicalActor};
 use crate::{
     Result,
     protocol::{
         messages::{
+            camera::{CameraResponse, metadata_response},
             data::{DataFrame, DataKind, NetworkingPayload},
             device::{NetworkingReply, NetworkingSync},
             sdk::{ChannelBody, ChannelControl},
@@ -19,11 +20,27 @@ use tokio::net::UdpSocket;
 
 impl PhysicalActor {
     pub(super) async fn receive_data(&mut self, frame: DataFrame, physical_id: u8) -> Result<()> {
+        tracing::info!(
+            target: "session",
+            "[session] data frame slot={} kind={:?} len={}",
+            frame.slot,
+            frame.kind,
+            frame.payload.len()
+        );
         let Some(full) = self
             .connections
             .iter()
             .find_map(|(full, c)| (c.local == frame.slot).then_some(*full))
         else {
+            tracing::warn!(
+                target: "session",
+                "[session] data frame slot {} matches no connection; known={:?}",
+                frame.slot,
+                self.connections
+                    .values()
+                    .map(|c| (c.local, c.remote, c.service.as_str()))
+                    .collect::<Vec<_>>()
+            );
             return Ok(());
         };
         let mut c = self.connections.remove(&full).unwrap();
@@ -83,6 +100,8 @@ impl PhysicalActor {
                     _ => {}
                 }
             }
+        } else if c.service == crate::protocol::service::CAMERA_METADATA {
+            self.receive_hardware_service(&mut c, &clear).await?;
         } else {
             let control = ChannelControl::decode(&clear)?;
             match control.body {
@@ -110,6 +129,46 @@ impl PhysicalActor {
             }
         }
         self.connections.insert(full, c);
+        Ok(())
+    }
+    /// Minimal PC-side distributedHardware service: answer the phone's metadata
+    /// requests so its HardwareController keeps this PC online. The PC exposes
+    /// no distributable hardware, so the response carries an empty list.
+    async fn receive_hardware_service(
+        &mut self,
+        c: &mut LogicalConnection,
+        data: &[u8],
+    ) -> Result<()> {
+        if let Ok(control) = ChannelControl::decode(data)
+            && let ChannelBody::PeerPortRequest { id, key, .. } = control.body
+        {
+            self.respond_peer_port(c, id, &key).await?;
+            return Ok(());
+        }
+        let response = match CameraResponse::decode(data) {
+            Ok(response) => response,
+            Err(error) => {
+                tracing::warn!(target: "session", "[session] hardware-service decode failed: {error:#}");
+                return Ok(());
+            }
+        };
+        tracing::info!(
+            target: "session",
+            "[session] hardware-service recv action={} seq={} type={}",
+            response.action,
+            response.seq_id,
+            response.packet_type
+        );
+        let (action, status) = match response.action {
+            3 => (4, 0),
+            5 => (6, 4),
+            _ => return Ok(()),
+        };
+        let own_id = self.session.account().short_id();
+        let packet = metadata_response(&own_id, response.seq_id, 21, action, status);
+        if let Some(channel) = &c.channel {
+            channel.send(&packet).await?;
+        }
         Ok(())
     }
 }

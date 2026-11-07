@@ -76,6 +76,28 @@ impl PhysicalActor {
                 let result = self.close_channel(id, force).await;
                 let _ = reply.send(result);
             }
+            Command::RetrySdk { full } => {
+                let Some(connection) = self.connections.remove(&full) else {
+                    return Ok(());
+                };
+                let retry = connection.channel.is_none()
+                    && !connection.closing
+                    && connection.service != crate::session::NETWORKING;
+                tracing::info!(
+                    target: "session",
+                    "[session] RetrySdk full={} service={} retry={}",
+                    full,
+                    connection.service,
+                    retry
+                );
+                let result = if retry {
+                    self.start_sdk(&connection)
+                } else {
+                    Ok(())
+                };
+                self.connections.insert(full, connection);
+                result?;
+            }
             Command::Close(reply) => self.begin_close(reply).await?,
         }
         Ok(())

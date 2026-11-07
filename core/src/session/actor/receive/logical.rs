@@ -253,6 +253,14 @@ impl PhysicalActor {
         full: u32,
         encrypted: bool,
     ) -> Result<bool> {
+        tracing::info!(
+            target: "session",
+            "[session] inbound logical full={full} kind={} service={} outgoing={} phase={}",
+            body.kind(),
+            connection.service,
+            connection.outgoing,
+            connection.phase
+        );
         match body {
             LogicalBody::Sync(_) if connection.outgoing && connection.phase == 0 => {
                 let notify = connection.auth.client_notify();
@@ -384,6 +392,13 @@ impl PhysicalActor {
         response: ServiceResponse,
         full: u32,
     ) -> Result<bool> {
+        tracing::info!(
+            target: "session",
+            "[session] ServiceResponse full={full} service={} status={} phase={}",
+            connection.service,
+            response.status,
+            connection.phase
+        );
         if response.status != 0 {
             if let Some(reply) = connection.reply.take() {
                 let _ = reply.send(Err(anyhow::anyhow!(
@@ -419,12 +434,30 @@ impl PhysicalActor {
             )?;
         } else {
             self.start_sdk(connection)?;
+            self.schedule_sdk_retry(connection.full);
         }
         connection.phase = 3;
         Ok(true)
     }
 
+    /// OS4 can confirm a logical channel several seconds after the service
+    /// response. The first PeerPortRequest is then sent before the phone's
+    /// channel exists and is dropped, so resend it while the caller waits.
+    fn schedule_sdk_retry(&self, full: u32) {
+        let session = self.session.clone();
+        tokio::spawn(async move {
+            for delay in [4u64, 8] {
+                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+                session.retry_sdk(full).await;
+            }
+        });
+    }
+
     async fn handle_ack(&mut self, connection: &mut LogicalConnection) -> Result<()> {
+        let accepted_outgoing = connection.outgoing
+            && connection.phase == 2
+            && connection.channel.is_none()
+            && connection.upgrade_query.is_none();
         connection.phase = 3;
         if connection.service == NETWORKING && !connection.outgoing {
             self.phase("入站 Networking 设备和服务同步");
@@ -443,6 +476,13 @@ impl PhysicalActor {
             let request = Fields::decode(&request)?;
             self.respond_peer_port(connection, request.uint(1), request.bytes(4))
                 .await?;
+        } else if accepted_outgoing && connection.service != NETWORKING {
+            // OS4 confirms a service channel with a logical Ack instead of a
+            // separate ServiceResponse. Continue with the SDK port exchange
+            // here as well, otherwise the phone waits for PeerPortRequest and
+            // the caller times out at the channel-open stage.
+            self.phase(&format!("手机已确认业务 {}，开始 SDK", connection.service));
+            self.start_sdk(connection)?;
         }
         Ok(())
     }

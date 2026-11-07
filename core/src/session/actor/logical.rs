@@ -192,6 +192,16 @@ impl PhysicalActor {
         Ok(())
     }
     pub(super) fn start_sdk(&mut self, c: &LogicalConnection) -> Result<()> {
+        tracing::info!(
+            target: "session",
+            "[session] start_sdk full={} service={} physical={} sdk_id={} key_len={} remote={}",
+            c.full,
+            c.service,
+            c.physical,
+            c.sdk_id,
+            c.trans_key.len(),
+            c.remote
+        );
         let request = ChannelControl::peer_port_request(c.sdk_id as u64, c.trans_key.clone());
         self.queue_on(
             c.physical,
