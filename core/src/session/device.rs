@@ -77,6 +77,14 @@ pub(super) fn network_device(account: &Account, o: &ConnectOptions) -> Result<Ne
             data: vec![1],
         });
     }
+    // HardwareManager.onDeviceOnline reads this service to obtain the PC's
+    // metadata version; without it the phone logs serviceInfo=null and treats
+    // the version as zero.
+    services.push(DeviceService {
+        name: "publicMetadataVersion".into(),
+        app: "com.milink.service".into(),
+        data: b"0000".to_vec(),
+    });
     services.push(DeviceService {
         name: "cameraP2P".into(),
         app: "com.milink.service".into(),
