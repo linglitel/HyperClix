@@ -189,10 +189,25 @@ impl PhysicalActor {
                 loop {
                     match events.recv().await {
                         Ok(ChannelEvent::Data(data)) => {
-                            let Ok(request) = CameraResponse::decode(&data) else {
-                                continue;
+                            let request = match CameraResponse::decode(&data) {
+                                Ok(request) => request,
+                                Err(error) => {
+                                    tracing::warn!(
+                                        target: "session",
+                                        "[session] reverse hardware decode failed: {error:#} bytes={} head={}",
+                                        data.len(),
+                                        hex::encode(&data[..data.len().min(48)])
+                                    );
+                                    continue;
+                                }
                             };
                             if request.action != 3 {
+                                tracing::debug!(
+                                    target: "session",
+                                    "[session] reverse hardware ignored action={} seq={}",
+                                    request.action,
+                                    request.seq_id
+                                );
                                 continue;
                             }
                             let response =
