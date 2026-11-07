@@ -102,8 +102,10 @@ pub(crate) fn hardware_message(
     body.bytes(5, "HardwareService");
     body.varint(6, 1);
     body.bytes(7, hardware.encode());
+    // SET_DEFAULT/RESET_DEFAULT are requests to the phone's hardware service.
+    // CrossDeviceData.Type.RESPONSE=2 would bypass OnHandleRequest entirely.
     CameraEnvelope {
-        request: false,
+        request: true,
         body: body.finish(),
     }
     .encode(own_id)
