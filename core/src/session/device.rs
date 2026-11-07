@@ -83,7 +83,9 @@ pub(super) fn network_device(account: &Account, o: &ConnectOptions) -> Result<Ne
     services.push(DeviceService {
         name: "publicMetadataVersion".into(),
         app: "com.milink.service".into(),
-        data: b"0000".to_vec(),
+        // DeviceManager.p(byte[]) folds the service data as a big-endian
+        // integer. The phone itself publishes two bytes, not ASCII "0000".
+        data: vec![0, 0],
     });
     services.push(DeviceService {
         name: "cameraP2P".into(),
