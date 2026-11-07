@@ -168,6 +168,9 @@ pub(crate) fn metadata_response(
         envelope.varint(5, seq_id);
     }
     envelope.varint(6, 2);
+    // CrossDeviceData.responseCode: DistCodes.SUCC == 1. The phone's
+    // CrossDeviceMessageManager marks a response successful only for 1.
+    envelope.varint(7, 1);
     envelope.bytes(8, &body.finish());
     envelope.finish()
 }
