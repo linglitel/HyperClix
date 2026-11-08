@@ -362,7 +362,7 @@ impl RtpSequence {
                     let delta = timestamp.wrapping_sub(previous_timestamp) as i32;
                     if delta.unsigned_abs() > 90_000 * 2 {
                         self.reset = true;
-                        self.stale_before = self.max_timestamp;
+                        self.stale_before = Some(timestamp);
                         self.stale_until = Some(Instant::now() + Duration::from_secs(3));
                     }
                 }
@@ -375,7 +375,7 @@ impl RtpSequence {
                 return (gap as u64, 0);
             }
             self.reset = true;
-            self.stale_before = self.max_timestamp;
+            self.stale_before = Some(timestamp);
             self.stale_until = Some(Instant::now() + Duration::from_secs(3));
         }
         self.source = Some((ssrc, sequence.wrapping_add(1)));
