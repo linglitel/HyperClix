@@ -102,13 +102,18 @@ pub(crate) fn hardware_message(
     body.bytes(5, "HardwareService");
     body.varint(6, 1);
     body.bytes(7, hardware.encode());
-    // SET_DEFAULT/RESET_DEFAULT are requests to the phone's hardware service.
-    // CrossDeviceData.Type.RESPONSE=2 would bypass OnHandleRequest entirely.
-    CameraEnvelope {
-        request: true,
-        body: body.finish(),
-    }
-    .encode(own_id)
+    // SET_DEFAULT/RESET_DEFAULT are one-way MESSAGE packets. The phone's
+    // AssociationManager receives them through onHandleMessage; REQUEST would
+    // be routed to CommunicateManager.OnHandleRequest, which rejects any
+    // action other than REQUEST with "illegal action type=SET_DEFAULT".
+    let mut envelope = Writer::new();
+    envelope.varint(1, 1);
+    envelope.bytes(2, own_id);
+    envelope.varint(3, epoch_ms());
+    envelope.bytes(4, METADATA_CATEGORY);
+    envelope.varint(6, 0);
+    envelope.bytes(8, &body.finish());
+    envelope.finish()
 }
 
 #[derive(Clone, Debug)]
