@@ -480,8 +480,8 @@ impl Ui {
         let cam = card();
         let lens = gtk::DropDown::from_strings(&["后置镜头", "前置镜头"]);
         cam.append(&row("手机镜头", &lens));
-        let camera_width = number(1280.0, 160.0, 3840.0, 160.0);
-        let camera_height = number(720.0, 120.0, 2160.0, 120.0);
+        let camera_width = number(1440.0, 160.0, 3840.0, 160.0);
+        let camera_height = number(1080.0, 120.0, 2160.0, 120.0);
         let csize = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         csize.append(&camera_width);
         csize.append(&gtk::Label::new(Some("×")));
