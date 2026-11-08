@@ -152,6 +152,12 @@ pub(super) fn decode(
                             frame.pts()
                         );
                     }
+                    // A switch can leave non-keyframes from the old camera in the
+                    // decoder queue. Do not display them while waiting for the
+                    // new stream's IDR.
+                    if control.is_recovering_video() && !frame.is_key() {
+                        continue;
+                    }
                     output.push(&frame, pts, decoded_at, &control, &options, pace)?;
                 }
                 if accepted {

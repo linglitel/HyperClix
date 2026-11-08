@@ -183,10 +183,6 @@ impl Control {
     fn is_recovering_video(&self) -> bool {
         self.recovering_video.load(Ordering::Acquire)
     }
-    pub(crate) fn clear_video_recovery(&self) {
-        self.recovering_video.store(false, Ordering::Release);
-        self.shared.lock().unwrap().stats.waiting_for_video_keyframe = false;
-    }
     fn recover_video(&self, reason: &str) {
         if !self.recovering_video.swap(true, Ordering::AcqRel) {
             self.shared.lock().unwrap().stats.waiting_for_video_keyframe = true;

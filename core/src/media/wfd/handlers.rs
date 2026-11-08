@@ -3,7 +3,11 @@ use super::super::rtsp::{rtsp_request, rtsp_send};
 use super::{Clock, Control};
 use crate::Result;
 use anyhow::{Context, ensure};
-use std::{collections::BTreeMap, sync::Arc, time::Instant};
+use std::{
+    collections::BTreeMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::{net::TcpStream, sync::mpsc};
 
 pub(super) fn wfd_capabilities(port: u16, key: Option<[u8; 16]>) -> BTreeMap<&'static str, String> {
@@ -50,6 +54,9 @@ pub(super) async fn handle_rtp_packet(
         .replace(arrival)
         .map(|previous| arrival.duration_since(previous).as_secs_f64() * 1000.0);
     let (gaps, late) = rtp_sequence.observe(packet);
+    if rtp_sequence.take_stale(arrival) {
+        return Ok(());
+    }
     let source_reset = rtp_sequence.take_reset();
     {
         let mut shared = control.shared.lock().unwrap();
@@ -108,7 +115,6 @@ pub(super) async fn handle_rtp_packet(
                     "[media={:p}] camera switch IDR received; resuming video",
                     Arc::as_ptr(&control)
                 );
-                control.clear_video_recovery();
                 resuming = true;
             }
             tokio::select! { result=tx.send(es)=>{result.context("camera decoder stopped")?;},_=control.wake.notified()=>return Ok(())}
@@ -318,22 +324,46 @@ pub(super) struct RtpSequence {
     source: Option<(u32, u16)>,
     timestamp: Option<u32>,
     reset: bool,
+    max_timestamp: Option<u32>,
+    stale_before: Option<u32>,
+    stale_until: Option<Instant>,
+    stale: bool,
 }
 impl RtpSequence {
     pub(super) fn take_reset(&mut self) -> bool {
         std::mem::take(&mut self.reset)
+    }
+    pub(super) fn take_stale(&mut self, now: Instant) -> bool {
+        if self.stale_until.is_some_and(|until| now >= until) {
+            self.stale_before = None;
+            self.stale_until = None;
+        }
+        std::mem::take(&mut self.stale)
     }
     /// Called after validating the RTP header. This observes arrival order only.
     pub(super) fn observe(&mut self, packet: &[u8]) -> (u64, u64) {
         let ssrc = u32::from_be_bytes(packet[8..12].try_into().unwrap());
         let sequence = u16::from_be_bytes([packet[2], packet[3]]);
         let timestamp = u32::from_be_bytes(packet[4..8].try_into().unwrap());
+        if let (Some(floor), Some(until)) = (self.stale_before, self.stale_until)
+            && Instant::now() < until
+            && (timestamp.wrapping_sub(floor) as i32) < 0
+        {
+            self.stale = true;
+            return (0, 0);
+        }
+        self.max_timestamp = Some(match self.max_timestamp {
+            Some(previous) if (timestamp.wrapping_sub(previous) as i32) < 0 => previous,
+            _ => timestamp,
+        });
         if let Some((previous_source, next)) = self.source {
             if previous_source == ssrc {
                 if let Some(previous_timestamp) = self.timestamp {
                     let delta = timestamp.wrapping_sub(previous_timestamp) as i32;
                     if delta.unsigned_abs() > 90_000 * 2 {
                         self.reset = true;
+                        self.stale_before = self.max_timestamp;
+                        self.stale_until = Some(Instant::now() + Duration::from_secs(3));
                     }
                 }
                 self.timestamp = Some(timestamp);
@@ -345,6 +375,8 @@ impl RtpSequence {
                 return (gap as u64, 0);
             }
             self.reset = true;
+            self.stale_before = self.max_timestamp;
+            self.stale_until = Some(Instant::now() + Duration::from_secs(3));
         }
         self.source = Some((ssrc, sequence.wrapping_add(1)));
         self.timestamp = Some(timestamp);
