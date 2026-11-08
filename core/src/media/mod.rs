@@ -180,6 +180,9 @@ impl Control {
         self.keyframe_requested.store(true, Ordering::Release);
         self.keyframe_wake.notify_one();
     }
+    fn is_recovering_video(&self) -> bool {
+        self.recovering_video.load(Ordering::Acquire)
+    }
     fn recover_video(&self, reason: &str) {
         if !self.recovering_video.swap(true, Ordering::AcqRel) {
             self.shared.lock().unwrap().stats.waiting_for_video_keyframe = true;

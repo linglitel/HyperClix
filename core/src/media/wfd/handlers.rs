@@ -50,6 +50,7 @@ pub(super) async fn handle_rtp_packet(
         .replace(arrival)
         .map(|previous| arrival.duration_since(previous).as_secs_f64() * 1000.0);
     let (gaps, late) = rtp_sequence.observe(packet);
+    let source_reset = rtp_sequence.take_reset();
     {
         let mut shared = control.shared.lock().unwrap();
         shared.stats.rtp_packets += 1;
@@ -60,7 +61,18 @@ pub(super) async fn handle_rtp_packet(
         shared.stats.rtp_sequence_gaps += gaps;
         shared.stats.rtp_late_packets += late;
     }
-    if gaps > 0 {
+    if source_reset {
+        let ssrc = u32::from_be_bytes(packet[8..12].try_into().unwrap());
+        let timestamp = u32::from_be_bytes(packet[4..8].try_into().unwrap());
+        tracing::info!(
+            "[media={:p}] RTP source/timestamp discontinuity ssrc={ssrc:#010x} ts={timestamp}; resetting video clock and queue",
+            Arc::as_ptr(&control)
+        );
+        control.recover_video("RTP source/timestamp discontinuity");
+        let mut shared = control.shared.lock().unwrap();
+        shared.clock.initialized = false;
+        shared.frames.clear();
+    } else if gaps > 0 {
         control.recover_video("RTP sequence gap; compressed reference data may be incomplete");
     }
     if payload.first() != Some(&0x47) || payload.len() % 188 != 0 {
@@ -87,6 +99,9 @@ pub(super) async fn handle_rtp_packet(
     }
     if let Some(decoder) = camera.as_mut() {
         for es in decoder.feed(payload)? {
+            if control.is_recovering_video() && !h264_has_keyframe(&es) {
+                continue;
+            }
             tokio::select! { result=tx.send(es)=>{result.context("camera decoder stopped")?;},_=control.wake.notified()=>return Ok(())}
         }
     } else {
@@ -292,14 +307,27 @@ pub(super) fn rtp_payload(packet: &[u8]) -> Result<&[u8]> {
 #[derive(Default)]
 pub(super) struct RtpSequence {
     source: Option<(u32, u16)>,
+    timestamp: Option<u32>,
+    reset: bool,
 }
 impl RtpSequence {
+    pub(super) fn take_reset(&mut self) -> bool {
+        std::mem::take(&mut self.reset)
+    }
     /// Called after validating the RTP header. This observes arrival order only.
     pub(super) fn observe(&mut self, packet: &[u8]) -> (u64, u64) {
         let ssrc = u32::from_be_bytes(packet[8..12].try_into().unwrap());
         let sequence = u16::from_be_bytes([packet[2], packet[3]]);
+        let timestamp = u32::from_be_bytes(packet[4..8].try_into().unwrap());
         if let Some((previous_source, next)) = self.source {
             if previous_source == ssrc {
+                if let Some(previous_timestamp) = self.timestamp {
+                    let delta = timestamp.wrapping_sub(previous_timestamp) as i32;
+                    if delta.unsigned_abs() > 90_000 * 2 {
+                        self.reset = true;
+                    }
+                }
+                self.timestamp = Some(timestamp);
                 let gap = sequence.wrapping_sub(next);
                 if gap >= 0x8000 {
                     return (0, 1);
@@ -307,8 +335,31 @@ impl RtpSequence {
                 self.source = Some((ssrc, sequence.wrapping_add(1)));
                 return (gap as u64, 0);
             }
+            self.reset = true;
         }
         self.source = Some((ssrc, sequence.wrapping_add(1)));
+        self.timestamp = Some(timestamp);
         (0, 0)
     }
+}
+
+fn h264_has_keyframe(data: &[u8]) -> bool {
+    let mut offset = 0;
+    while offset + 4 <= data.len() {
+        let Some(position) = data[offset..]
+            .windows(3)
+            .position(|window| window == [0, 0, 1])
+        else {
+            return false;
+        };
+        let start = offset + position + 3;
+        if start < data.len() {
+            let nal = data[start] & 0x1f;
+            if nal == 5 || nal == 7 || nal == 8 {
+                return true;
+            }
+        }
+        offset = start;
+    }
+    false
 }
