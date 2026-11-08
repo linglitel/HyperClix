@@ -87,7 +87,7 @@ impl MediaPlayer {
             Arc::as_ptr(&control),
             options.audio
         );
-        let (tx, rx) = mpsc::channel(256);
+        let (tx, rx) = mpsc::channel(32);
         let c = control.clone();
         let network = tokio::spawn(async move {
             if let Err(e) = wfd(rtsp, rtp, rtcp, peer, key, tx, c.clone()).await {

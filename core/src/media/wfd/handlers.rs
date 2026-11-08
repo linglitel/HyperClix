@@ -117,10 +117,26 @@ pub(super) async fn handle_rtp_packet(
                 );
                 resuming = true;
             }
-            tokio::select! { result=tx.send(es)=>{result.context("camera decoder stopped")?;},_=control.wake.notified()=>return Ok(())}
+            match tx.try_send(es) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    control.recover_video("camera decoder queue full; dropping frame");
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    anyhow::bail!("camera decoder stopped");
+                }
+            }
         }
     } else {
-        tokio::select! {result=tx.send(payload.to_vec())=>{result.context("video decoder stopped")?;},_=control.wake.notified()=>return Ok(())}
+        match tx.try_send(payload.to_vec()) {
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                control.recover_video("video decoder queue full; dropping frame");
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                anyhow::bail!("video decoder stopped");
+            }
+        }
     }
     Ok(())
 }
