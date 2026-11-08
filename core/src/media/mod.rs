@@ -176,7 +176,7 @@ impl Control {
             .audio_error
             .get_or_insert_with(|| error.to_string());
     }
-    fn request_keyframe(&self) {
+    pub(crate) fn request_keyframe(&self) {
         self.keyframe_requested.store(true, Ordering::Release);
         self.keyframe_wake.notify_one();
     }
