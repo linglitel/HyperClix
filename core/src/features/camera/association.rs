@@ -19,6 +19,9 @@ use tokio::sync::{Mutex, broadcast};
 /// A reused association must answer quickly; a stale one is replaced instead of
 /// blocking the next preview for the full RPC timeout.
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
+/// A phone that has just torn down a preview can briefly reject a new metadata
+/// channel. Retry instead of blocking the UI for the full session timeout.
+const METADATA_OPEN_TIMEOUT: Duration = Duration::from_secs(6);
 
 #[derive(Clone)]
 pub(super) struct CameraHardware {
@@ -165,9 +168,36 @@ async fn open_fresh(session: &Session, options: &CameraOptions) -> Result<Camera
         "[camera] sender identity: short={own_id} full={digest} device_type={device_type}"
     );
     tracing::info!("[camera] opening metadata channel");
-    let channel = session
-        .open_channel(METADATA_SERVICE, TRUST_PAIR, SdkPlatform::Linux)
-        .await?;
+    let mut last_error = None;
+    let mut channel = None;
+    for attempt in 0..2 {
+        match tokio::time::timeout(
+            METADATA_OPEN_TIMEOUT,
+            session.open_channel(METADATA_SERVICE, TRUST_PAIR, SdkPlatform::Linux),
+        )
+        .await
+        {
+            Ok(Ok(opened)) => {
+                channel = Some(opened);
+                break;
+            }
+            Ok(Err(error)) => last_error = Some(error),
+            Err(_) => {
+                last_error = Some(anyhow::anyhow!(
+                    "metadata channel open timed out after {}s",
+                    METADATA_OPEN_TIMEOUT.as_secs()
+                ))
+            }
+        }
+        tracing::warn!(
+            "[camera] metadata channel open attempt {} failed; retrying",
+            attempt + 1
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    let channel = channel.ok_or_else(|| {
+        last_error.unwrap_or_else(|| anyhow::anyhow!("metadata channel open failed"))
+    })?;
     tracing::info!("[camera] metadata channel ready id={}", channel.id());
     let mut rx = channel.subscribe();
     let result: Result<CameraHardware> = async {
