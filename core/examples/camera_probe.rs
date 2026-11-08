@@ -34,7 +34,17 @@ async fn main() -> Result<()> {
     println!("connected");
     let preview = session.open_camera(CameraOptions::default()).await?;
     println!("camera opened: {:?}", preview.config());
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    let feed = preview.feed();
+    let player = hyperclix_core::media::MediaPlayer::play_camera(
+        session.local_ip(),
+        feed,
+        hyperclix_core::media::PlaybackOptions { audio: false, ..Default::default() },
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    let stats = player.stats();
+    println!("rtp_packets={} bytes={} decoded={} size={}x{}", stats.rtp_packets, stats.received_bytes, stats.decoded_frames, stats.width, stats.height);
+    let _ = player.close().await;
     let _ = preview.close().await;
     let _ = session.close().await;
     Ok(())
