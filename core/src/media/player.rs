@@ -24,7 +24,16 @@ impl MediaPlayer {
         port: u16,
         options: PlaybackOptions,
     ) -> Result<Self> {
-        Self::play_wfd(local_ip, peer, port, None, "desktop.ts", options).await
+        Self::play_wfd(
+            local_ip,
+            peer,
+            port,
+            None,
+            "desktop.ts",
+            options,
+            Duration::ZERO,
+        )
+        .await
     }
     pub async fn play_camera(
         local_ip: Ipv4Addr,
@@ -35,7 +44,19 @@ impl MediaPlayer {
             crate::media::CameraCodec::H264 => "camera.h264",
             crate::media::CameraCodec::H265 => "camera.hevc",
         };
-        Self::play_wfd(local_ip, feed.ip, feed.port, Some(feed.key), hint, options).await
+        // The phone starts a new RTSP server during camera startup. At
+        // 1440x1080 it can bind after the command RPC returns, so connecting
+        // immediately can attach to the old/no-media listener.
+        Self::play_wfd(
+            local_ip,
+            feed.ip,
+            feed.port,
+            Some(feed.key),
+            hint,
+            options,
+            Duration::from_millis(600),
+        )
+        .await
     }
     async fn play_wfd(
         local_ip: Ipv4Addr,
@@ -44,7 +65,11 @@ impl MediaPlayer {
         key: Option<[u8; 16]>,
         hint: &'static str,
         options: PlaybackOptions,
+        start_delay: Duration,
     ) -> Result<Self> {
+        if !start_delay.is_zero() {
+            tokio::time::sleep(start_delay).await;
+        }
         let rtsp = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect((peer, port)))
             .await
             .context("RTSP connection timed out")??;
