@@ -54,7 +54,7 @@ impl MediaPlayer {
             Some(feed.key),
             hint,
             options,
-            Duration::from_millis(1200),
+            Duration::ZERO,
         )
         .await
     }

@@ -18,8 +18,8 @@ impl Default for CameraOptions {
     fn default() -> Self {
         Self {
             camera_id: 0,
-            width: 1440,
-            height: 1080,
+            width: 1280,
+            height: 720,
             hardware_index: 0,
             timeout: Duration::from_secs(60),
         }
