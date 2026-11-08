@@ -29,9 +29,27 @@ pub(super) async fn metadata_exchange(
     timeout: Duration,
 ) -> Result<Vec<u8>> {
     channel.send(packet).await?;
+    // The phone creates the camera SDK channel before com.xiaomi.vtcamera has
+    // finished scanning local hardware. A query sent immediately after
+    // PeerPortResponse can race that scan and be dropped, so retry the
+    // metadata query until the phone answers.
+    let resend_period = if action == 4 {
+        Duration::from_millis(1500)
+    } else {
+        timeout + Duration::from_secs(3600)
+    };
+    let mut resend =
+        tokio::time::interval_at(tokio::time::Instant::now() + resend_period, resend_period);
     tokio::time::timeout(timeout, async {
         loop {
-            let data = raw_receive(rx).await?;
+            let data = tokio::select! {
+                _ = resend.tick() => {
+                    tracing::info!("[camera] resend hardware query action={action}");
+                    channel.send(packet).await?;
+                    continue;
+                }
+                data = raw_receive(rx) => data?,
+            };
             let response = CameraResponse::decode(&data)?;
             if response.category != METADATA_CATEGORY {
                 continue;
