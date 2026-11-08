@@ -3,11 +3,7 @@ use super::super::rtsp::{rtsp_request, rtsp_send};
 use super::{Clock, Control};
 use crate::Result;
 use anyhow::{Context, ensure};
-use std::{
-    collections::BTreeMap,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeMap, sync::Arc, time::Instant};
 use tokio::{net::TcpStream, sync::mpsc};
 
 pub(super) fn wfd_capabilities(port: u16, key: Option<[u8; 16]>) -> BTreeMap<&'static str, String> {
@@ -79,16 +75,6 @@ pub(super) async fn handle_rtp_packet(
     } else if gaps > 0 {
         control.recover_video("RTP sequence gap; compressed reference data may be incomplete");
     }
-    if rtp_sequence.should_drop(arrival) {
-        return Ok(());
-    }
-    if rtp_sequence.take_resync_end() {
-        tracing::info!(
-            "[media={:p}] RTP resync window ended; requesting fresh keyframe",
-            Arc::as_ptr(&control)
-        );
-        control.request_keyframe();
-    }
     if payload.first() != Some(&0x47) || payload.len() % 188 != 0 {
         return Ok(());
     }
@@ -112,9 +98,18 @@ pub(super) async fn handle_rtp_packet(
         }
     }
     if let Some(decoder) = camera.as_mut() {
+        let mut resuming = !control.is_recovering_video();
         for es in decoder.feed(payload)? {
-            if control.is_recovering_video() && !h264_has_keyframe(&es) {
-                continue;
+            if !resuming {
+                if !h264_has_keyframe(&es) {
+                    continue;
+                }
+                tracing::info!(
+                    "[media={:p}] camera switch IDR received; resuming video",
+                    Arc::as_ptr(&control)
+                );
+                control.clear_video_recovery();
+                resuming = true;
             }
             tokio::select! { result=tx.send(es)=>{result.context("camera decoder stopped")?;},_=control.wake.notified()=>return Ok(())}
         }
@@ -323,31 +318,10 @@ pub(super) struct RtpSequence {
     source: Option<(u32, u16)>,
     timestamp: Option<u32>,
     reset: bool,
-    resync_until: Option<Instant>,
-    resync_ended: bool,
 }
 impl RtpSequence {
     pub(super) fn take_reset(&mut self) -> bool {
-        if std::mem::take(&mut self.reset) {
-            self.resync_until = Some(Instant::now() + Duration::from_millis(2000));
-            true
-        } else {
-            false
-        }
-    }
-    pub(super) fn should_drop(&mut self, now: Instant) -> bool {
-        match self.resync_until {
-            Some(until) if now < until => true,
-            Some(_) => {
-                self.resync_until = None;
-                self.resync_ended = true;
-                false
-            }
-            None => false,
-        }
-    }
-    pub(super) fn take_resync_end(&mut self) -> bool {
-        std::mem::take(&mut self.resync_ended)
+        std::mem::take(&mut self.reset)
     }
     /// Called after validating the RTP header. This observes arrival order only.
     pub(super) fn observe(&mut self, packet: &[u8]) -> (u64, u64) {
