@@ -51,6 +51,13 @@ impl Session {
 }
 impl CameraPreview {
     pub async fn open(session: &Session, options: CameraOptions) -> Result<Self> {
+        tracing::info!(
+            "[camera] open request camera_id={} size={}x{} hardware_index={}",
+            options.camera_id,
+            options.width,
+            options.height,
+            options.hardware_index
+        );
         let runtime = session.extension::<CameraRuntime>();
         let hardware = runtime.association.acquire(session, &options).await?;
         let claim = ActiveCamera(runtime.clone());
