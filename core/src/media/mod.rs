@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
     time::Instant,
 };
@@ -135,6 +135,7 @@ pub(crate) struct Control {
     keyframe_requested: AtomicBool,
     keyframe_wake: Notify,
     recovering_video: AtomicBool,
+    generation: AtomicU64,
     audio_queue_len: Arc<AtomicUsize>,
     shared: Mutex<Shared>,
 }
@@ -149,6 +150,7 @@ impl Control {
             keyframe_requested: AtomicBool::new(false),
             keyframe_wake: Notify::new(),
             recovering_video: AtomicBool::new(false),
+            generation: AtomicU64::new(0),
             audio_queue_len: Arc::new(AtomicUsize::new(0)),
             shared: Mutex::new(Shared {
                 frames: VecDeque::new(),
@@ -182,6 +184,12 @@ impl Control {
     }
     fn is_recovering_video(&self) -> bool {
         self.recovering_video.load(Ordering::Acquire)
+    }
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+    pub(crate) fn advance_generation(&self) -> u64 {
+        self.generation.fetch_add(1, Ordering::AcqRel) + 1
     }
     fn recover_video(&self, reason: &str) {
         if !self.recovering_video.swap(true, Ordering::AcqRel) {

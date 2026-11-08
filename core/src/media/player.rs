@@ -87,7 +87,7 @@ impl MediaPlayer {
             Arc::as_ptr(&control),
             options.audio
         );
-        let (tx, rx) = mpsc::channel(32);
+        let (tx, rx) = mpsc::channel::<(u64, Vec<u8>)>(32);
         let c = control.clone();
         let network = tokio::spawn(async move {
             if let Err(e) = wfd(rtsp, rtp, rtcp, peer, key, tx, c.clone()).await {
@@ -100,6 +100,7 @@ impl MediaPlayer {
         let decoder = tokio::task::spawn_blocking(move || {
             let reader = ChannelReader {
                 rx,
+                control: c.clone(),
                 pending: Vec::new(),
                 position: 0,
             };
@@ -246,20 +247,22 @@ impl Drop for MediaPlayer {
     }
 }
 struct ChannelReader {
-    rx: mpsc::Receiver<Vec<u8>>,
+    rx: mpsc::Receiver<(u64, Vec<u8>)>,
+    control: Arc<Control>,
     pending: Vec<u8>,
     position: usize,
 }
 impl Read for ChannelReader {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-        if self.position == self.pending.len() {
-            match self.rx.blocking_recv() {
-                Some(data) => {
-                    self.pending = data;
-                    self.position = 0
-                }
-                None => return Ok(0),
+        while self.position == self.pending.len() {
+            let Some((generation, data)) = self.rx.blocking_recv() else {
+                return Ok(0);
+            };
+            if generation < self.control.generation() {
+                continue;
             }
+            self.pending = data;
+            self.position = 0;
         }
         let len = out.len().min(self.pending.len() - self.position);
         out[..len].copy_from_slice(&self.pending[self.position..self.position + len]);

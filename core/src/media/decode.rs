@@ -88,7 +88,18 @@ pub(super) fn decode(
     let mut packet = av::Packet::empty();
     let mut frame = av::frame::Video::empty();
     let mut first_video_frame = true;
+    let mut generation = control.generation();
     while !control.stopped.load(Ordering::Acquire) {
+        let current_generation = control.generation();
+        if current_generation != generation {
+            // Drop frames buffered by libav for the previous camera epoch.
+            decoder.flush();
+            generation = current_generation;
+            tracing::info!(
+                "[media={:p}] flushed video decoder for camera generation {generation}",
+                Arc::as_ptr(&control)
+            );
+        }
         let eof = match packet.read(&mut input) {
             Ok(()) => false,
             Err(av::Error::Eof) => true,

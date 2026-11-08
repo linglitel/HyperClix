@@ -46,7 +46,7 @@ pub(super) async fn handle_rtp_packet(
     arrival: Instant,
     camera: &mut Option<crate::media::camera_ts::PreviewTsDecoder>,
     control: &Arc<Control>,
-    tx: &mpsc::Sender<Vec<u8>>,
+    tx: &mpsc::Sender<(u64, Vec<u8>)>,
     rtp_sequence: &mut RtpSequence,
     last_rtp_arrival: &mut Option<Instant>,
 ) -> Result<()> {
@@ -75,6 +75,7 @@ pub(super) async fn handle_rtp_packet(
             "[media={:p}] RTP source/timestamp discontinuity ssrc={ssrc:#010x} ts={timestamp}; resetting video clock and queue",
             Arc::as_ptr(&control)
         );
+        control.advance_generation();
         control.recover_video("RTP source/timestamp discontinuity");
         let mut shared = control.shared.lock().unwrap();
         shared.clock.initialized = false;
@@ -104,6 +105,7 @@ pub(super) async fn handle_rtp_packet(
             );
         }
     }
+    let generation = control.generation();
     if let Some(decoder) = camera.as_mut() {
         let mut resuming = !control.is_recovering_video();
         for es in decoder.feed(payload)? {
@@ -117,7 +119,7 @@ pub(super) async fn handle_rtp_packet(
                 );
                 resuming = true;
             }
-            match tx.try_send(es) {
+            match tx.try_send((generation, es)) {
                 Ok(()) => {}
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                     control.recover_video("camera decoder queue full; dropping frame");
@@ -128,7 +130,7 @@ pub(super) async fn handle_rtp_packet(
             }
         }
     } else {
-        match tx.try_send(payload.to_vec()) {
+        match tx.try_send((generation, payload.to_vec())) {
             Ok(()) => {}
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                 control.recover_video("video decoder queue full; dropping frame");
