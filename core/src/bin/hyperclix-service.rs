@@ -5,6 +5,7 @@ use hyperclix_core::{
     SessionEvent, default_account_dir, discovery,
     mishare::{MiShare, TransferEvent},
     proximity::{BleListenerOptions, NearbyScanner, UpgradeClient},
+    relay::{RelayEvent, RelayOpened},
 };
 use std::{net::Ipv4Addr, path::PathBuf, sync::Arc, time::Duration};
 
@@ -13,6 +14,74 @@ fn argument(args: &[String], name: &str) -> Option<String> {
         .find(|item| item[0] == name)
         .map(|item| item[1].clone())
 }
+async fn run_relay(session: &Session, open: bool) -> Result<()> {
+    let monitor = session.relay_monitor().await?;
+    let mut events = monitor.subscribe();
+    let mut screen: Option<hyperclix_core::desktop::Screen> = None;
+    println!(
+        "应用接力监听已启动：CAST id={:?}，Ctrl+C 退出",
+        monitor.state().channel_id
+    );
+    loop {
+        tokio::select! {
+            signal = tokio::signal::ctrl_c() => {
+                signal?;
+                break;
+            }
+            event = events.recv() => match event {
+                Ok(RelayEvent::AppChanged(app)) => match app {
+                    Some(app) => println!(
+                        "应用接力：package={} name={} kind={:?} is_relay={} sub_screen={} handoff={} icon={}B",
+                        app.package, app.name, app.kind, app.is_relay,
+                        app.support_sub_screen, app.support_handoff, app.icon.len()
+                    ),
+                    None => println!("应用接力：手机当前应用已清空"),
+                },
+                Ok(RelayEvent::Content(content)) => {
+                    println!("应用接力内容：{content:?}");
+                    if open {
+                        match monitor.open(Default::default()).await {
+                            Ok(RelayOpened::App(new_screen)) => {
+                                if let Some(previous) = screen.replace(new_screen) {
+                                    if let Err(error) = previous.close().await {
+                                        tracing::warn!("[service] close previous relay screen: {error:#}");
+                                    }
+                                }
+                                println!("应用接力：已打开 App 窗口");
+                            }
+                            Ok(RelayOpened::External(target)) => {
+                                println!("应用接力：已在电脑打开 {target}");
+                            }
+                            Ok(RelayOpened::File(path)) => {
+                                println!("应用接力：已下载并打开 {}", path.display());
+                            }
+                            Err(error) => {
+                                println!("应用接力：打开失败：{error:#}");
+                            }
+                        }
+                    }
+                }
+                Ok(RelayEvent::Error(error)) => println!("应用接力错误：{error}"),
+                Ok(RelayEvent::Closed(reason)) => {
+                    println!("应用接力通道已关闭：{reason}");
+                    break;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                    println!("应用接力事件丢失 {count} 条");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    }
+    if let Some(screen) = screen {
+        if let Err(error) = screen.close().await {
+            tracing::warn!("[service] close relay screen: {error:#}");
+        }
+    }
+    monitor.close().await;
+    Ok(())
+}
+
 fn endpoint_for(args: &[String], local: Ipv4Addr) -> Result<Option<discovery::DeviceEndpoint>> {
     if let Some(endpoint) = argument(args, "--endpoint") {
         let (ip, port) = endpoint
@@ -32,9 +101,20 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|arg| arg == "--help") {
         println!(
-            "hyperclix-service [--account <目录>] [--name <名称>]\n  --interface <网卡> 启动局域网后台，可加 --receive-dir <目录>\n  --listen-ble 允许手机通过 BLE 主动连接，可与局域网后台同时开启\n  --interface <网卡> --apps <手机IPv4> 读取最近应用及图标\n  --nearby 扫描 BLE，无需局域网\n  --ble-connect 认证唯一同账号近场设备；可加 --p2p-interface <无线接口> 升级链路，--recent-apps 读取最近应用，--send-file <文件> 发送文件到手机，--endpoint <IP:端口> 跳过发现直连，--reconnect 按回车关闭并重连"
+            "hyperclix-service [--account <目录>] [--name <名称>]\n  --interface <网卡> 启动局域网后台，可加 --receive-dir <目录>\n  --listen-ble 允许手机通过 BLE 主动连接，可与局域网后台同时开启\n  --interface <网卡> --apps <手机IPv4> 读取最近应用及图标\n  --nearby 扫描 BLE，无需局域网\n  --ble-connect 认证唯一同账号近场设备；可加 --p2p-interface <无线接口> 升级链路，--recent-apps 读取最近应用，--relay 监听应用接力，--relay-open 自动打开收到的内容，--send-file <文件> 发送文件到手机，--endpoint <IP:端口> 跳过发现直连，--reconnect 按回车关闭并重连
+  --interface <网卡> --apps <手机IPv4> --relay 监听手机应用接力；加 --relay-open 自动打开收到的 App/URL/文件
+  --interface <网卡> --relay 在后台接受手机连接并监听应用接力
+  可用 --device-type 调试公告类型；正常运行跟随证书类型（当前需 Windows 4）"
         );
         return Ok(());
+    }
+    if args.iter().any(|arg| arg == "--relay")
+        && !args.iter().any(|arg| arg == "--apps")
+        && !args.iter().any(|arg| arg == "--ble-connect")
+        && !args.iter().any(|arg| arg == "--interface")
+        && !args.iter().any(|arg| arg == "--listen-ble")
+    {
+        bail!("--relay 需要配合 --apps <手机IPv4>、--ble-connect 或 --interface/--listen-ble 使用");
     }
     let log =
         hyperclix_core::logging::init(hyperclix_core::paths::logs_dir(), "HyperClix service")?;
@@ -48,6 +128,9 @@ async fn main() -> Result<()> {
         device_name: argument(&args, "--name").unwrap_or_else(|| DEFAULT_DEVICE_NAME.into()),
         ..Default::default()
     };
+    if let Some(value) = argument(&args, "--device-type") {
+        options.device_type = Some(value.parse().context("--device-type 需要数字")?);
+    }
     let upgrader = if let Some(interface) = argument(&args, "--p2p-interface") {
         let upgrader = UpgradeClient::new(&interface).await?;
         options.wifi_capabilities = Some(upgrader.capabilities());
@@ -94,6 +177,16 @@ async fn main() -> Result<()> {
                     let apps = session.recent_apps().await?;
                     println!("P2P 最近应用：{} 个，{} 个带图标", apps.len(),
                         apps.iter().filter(|app| !app.icon.is_empty()).count());
+                }
+                if args.iter().any(|arg| arg == "--relay") {
+                    let relayed = run_relay(
+                        &session,
+                        args.iter().any(|arg| arg == "--relay-open"),
+                    ).await;
+                    let closed = session.close().await;
+                    relayed?;
+                    closed?;
+                    return Ok(false);
                 }
                 if reconnect { println!("按回车关闭当前会话并重新认证、建立 P2P；Ctrl+C 退出"); }
                 let mut events = session.events();
@@ -213,6 +306,13 @@ async fn main() -> Result<()> {
                 .context("当前发现结果中没有这台手机")?
         };
         let session = Session::connect(&account, &endpoint, options).await?;
+        if args.iter().any(|arg| arg == "--relay") {
+            let result = run_relay(&session, args.iter().any(|arg| arg == "--relay-open")).await;
+            let close = session.close().await;
+            result?;
+            close?;
+            return Ok(());
+        }
         let result = session.recent_apps().await;
         let close = session.close().await;
         let apps = result?;
@@ -224,6 +324,8 @@ async fn main() -> Result<()> {
         );
         return Ok(());
     }
+    let relay = args.iter().any(|arg| arg == "--relay");
+    let relay_open = args.iter().any(|arg| arg == "--relay-open");
     let directory = argument(&args, "--receive-dir")
         .map(PathBuf::from)
         .unwrap_or_else(|| hyperclix_core::paths::received_dir());
@@ -275,6 +377,14 @@ async fn main() -> Result<()> {
                                 }
                             }
                         }
+                        if relay {
+                            let relay_session = session.clone();
+                            tokio::spawn(async move {
+                                if let Err(error) = run_relay(&relay_session, relay_open).await {
+                                    tracing::warn!("[service] relay listener: {error:#}");
+                                }
+                            });
+                        }
                         let share = MiShare::new(session, name.as_str());
                         loop {
                             let task = share.receive_files(directory.clone());
@@ -293,5 +403,6 @@ async fn main() -> Result<()> {
     while let Some(result) = receivers.join_next().await {
         let _ = result;
     }
+
     result.and(closed)
 }

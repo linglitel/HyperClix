@@ -55,6 +55,10 @@ pub(crate) enum SdkPlatform {
 #[derive(Clone, Debug)]
 pub struct ConnectOptions {
     pub device_name: String,
+    /// Lyra/BLE advertised device type. None follows the certificate type.
+    /// The official PC uses Windows (4); OTHER_PC (21) is filtered out by the
+    /// phone's device-center online predicate.
+    pub device_type: Option<u32>,
     pub market_name: Option<String>,
     pub capabilities: CastCapabilities,
     pub wifi_capabilities: Option<WifiCapabilities>,
@@ -72,6 +76,7 @@ impl Default for ConnectOptions {
     fn default() -> Self {
         Self {
             device_name: crate::DEFAULT_DEVICE_NAME.into(),
+            device_type: None,
             market_name: None,
             capabilities: CastCapabilities {
                 support_text_paste: Some(false),

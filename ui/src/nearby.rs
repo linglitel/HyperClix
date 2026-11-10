@@ -1,9 +1,9 @@
-use std::{process::Command, time::Duration};
+use std::{net::Ipv4Addr, process::Command, time::Duration};
 
 use anyhow::{Context, bail, ensure};
 use async_channel::Sender;
 use hyperclix_core::{
-    Account, ConnectOptions, Result, Server, ServerOptions, Session,
+    Account, ConnectOptions, Result, Server, ServerOptions, Session, discovery,
     proximity::{BleDevice, BleListenerOptions, NearbyScanner, UpgradeClient},
 };
 use tokio::{runtime::Runtime, sync::watch, task::JoinHandle};
@@ -64,27 +64,71 @@ async fn listen(
     mut stopped: watch::Receiver<bool>,
 ) -> Result<()> {
     status(tx, generation, "正在准备近场网络，可能需要系统授权…").await;
-    let upgrader = UpgradeClient::new(&interface).await?;
+    let local_ip = discovery::interfaces()?
+        .into_iter()
+        .find(|item| item.name == interface)
+        .map(|item| item.address);
+    if let Some(ip) = local_ip {
+        status(
+            tx,
+            generation,
+            &format!("准备局域网 KCP 与 mDNS 公告：{interface} {ip}"),
+        )
+        .await;
+    } else {
+        status(
+            tx,
+            generation,
+            &format!("{interface} 没有 IPv4，仅启动 BLE 后台；手机将无法通过局域网发现本机"),
+        )
+        .await;
+    }
+    let upgrader = match UpgradeClient::new(&interface).await {
+        Ok(upgrader) => Some(upgrader),
+        Err(error) => {
+            crate::logging::write(&format!(
+                "[nearby-ui] Wi-Fi Direct backend unavailable: {error:#}"
+            ));
+            status(
+                tx,
+                generation,
+                &format!("Wi-Fi Direct 不可用：{error:#}；继续提供 LAN/BLE 接入，但手机主动 BLE 连接无法升级"),
+            )
+            .await;
+            None
+        }
+    };
     if *stopped.borrow() {
         return Ok(());
     }
+    let connection = ConnectOptions {
+        device_name: name,
+        wifi_capabilities: upgrader.as_ref().map(UpgradeClient::capabilities),
+        ..Default::default()
+    };
     let mut server = Server::start(
         &account,
         ServerOptions {
+            local_ip: local_ip.unwrap_or(Ipv4Addr::UNSPECIFIED),
             ble: Some(BleListenerOptions {
-                name: name.clone(),
+                name: connection.device_name.clone(),
                 ..Default::default()
             }),
-            connection: ConnectOptions {
-                device_name: name,
-                wifi_capabilities: Some(upgrader.capabilities()),
-                ..Default::default()
-            },
+            connection,
             ..Default::default()
         },
     )
     .await?;
-    status(tx, generation, "BLE 后台在线，等待手机主动连接").await;
+    status(
+        tx,
+        generation,
+        if local_ip.is_some() {
+            "BLE + LAN 后台在线，等待手机主动连接"
+        } else {
+            "BLE 后台在线（无 LAN 公告），等待手机主动连接"
+        },
+    )
+    .await;
     let result = async {
         loop {
             if *stopped.borrow() {
@@ -94,34 +138,53 @@ async fn listen(
                 _ = stopped.changed() => break,
                 session = server.accept() => session?,
             };
-            status(
-                tx,
-                generation,
-                "手机已完成 BLE 认证，正在建立 Wi-Fi Direct…",
-            )
-            .await;
-            let upgraded = tokio::select! {
-                result = upgrader.upgrade(&session, Duration::from_secs(30)) => result,
-                _ = stopped.changed() => {
+            if session.peer_ip().is_unspecified() {
+                let Some(upgrader) = upgrader.as_ref() else {
                     let _ = session.close().await;
-                    break;
-                },
-            };
-            if let Err(error) = upgraded {
-                let _ = session.close().await;
+                    status(
+                        tx,
+                        generation,
+                        "手机通过 BLE 接入，但本机没有可用的 Wi-Fi Direct helper；关闭本次连接，继续等待 LAN 连接",
+                    )
+                    .await;
+                    continue;
+                };
                 status(
                     tx,
                     generation,
-                    &format!("手机近场连接失败：{error:#}；继续等待连接"),
+                    "手机已完成 BLE 认证，正在建立 Wi-Fi Direct…",
                 )
                 .await;
-                continue;
+                let upgraded = tokio::select! {
+                    result = upgrader.upgrade(&session, Duration::from_secs(30)) => result,
+                    _ = stopped.changed() => {
+                        let _ = session.close().await;
+                        break;
+                    },
+                };
+                if let Err(error) = upgraded {
+                    let _ = session.close().await;
+                    status(
+                        tx,
+                        generation,
+                        &format!("手机近场连接失败：{error:#}；继续等待连接"),
+                    )
+                    .await;
+                    continue;
+                }
+                if *stopped.borrow() {
+                    let _ = session.close().await;
+                    break;
+                }
+                status(tx, generation, "Wi-Fi Direct 已连接，后台继续监听").await;
+            } else {
+                status(
+                    tx,
+                    generation,
+                    &format!("手机已通过局域网接入 {}，后台继续监听", session.peer_ip()),
+                )
+                .await;
             }
-            if *stopped.borrow() {
-                let _ = session.close().await;
-                break;
-            }
-            status(tx, generation, "Wi-Fi Direct 已连接，后台继续监听").await;
             if let Err(error) = tx.send(Event::Incoming(generation, session)).await {
                 if let Event::Incoming(_, session) = error.0 {
                     let _ = session.close().await;

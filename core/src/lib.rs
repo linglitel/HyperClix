@@ -22,7 +22,7 @@ pub mod proximity;
 pub const DEFAULT_DEVICE_NAME: &str = "Linux PC";
 
 pub use crate::common::{Error, Result, logging, paths};
-pub use crate::features::{apps, camera, clipboard, desktop, files, mishare, notifications};
+pub use crate::features::{apps, camera, clipboard, desktop, files, mishare, notifications, relay};
 pub use crate::identity::{Account, Credentials, QrLogin, default_account_dir, device_subject};
 pub use crate::protocol::capabilities::CastCapabilities;
 pub use crate::session::server::{Server, ServerEvent, ServerOptions, ServerPeer};

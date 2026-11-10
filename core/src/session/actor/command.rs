@@ -177,6 +177,7 @@ impl PhysicalActor {
             &physical_sync(
                 self.session.account(),
                 &self.session.inner.options.device_name,
+                self.session.account().device_type,
                 crate::session::MEDIUM_P2P,
                 self.session.inner.options.wifi_capabilities.as_ref(),
             )

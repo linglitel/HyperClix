@@ -22,6 +22,7 @@ use hyperclix_core::{
         PushAppCredentials, PushRuntime,
     },
     proximity::BleDevice,
+    relay::{RelayEvent, RelayMonitor, RelayOpened},
 };
 use std::{
     cell::RefCell, future::Future, net::Ipv4Addr, path::PathBuf, rc::Rc, sync::Arc, time::Duration,
@@ -53,6 +54,9 @@ enum Event {
     Transfer(TransferTask),
     TransferUpdate(TransferEvent),
     Apps(Result<Vec<PhoneApp>>),
+    RelayStarted(Result<RelayMonitor>),
+    Relay(RelayEvent),
+    RelayOpened(Result<RelayOpened>),
     Notification(PhoneNotification),
     NotificationReady,
     NotificationAuthRequired,
@@ -71,6 +75,8 @@ struct Model {
     clipboard_pending: bool,
     last_remote: String,
     transfers: Vec<TransferTask>,
+    relay: Option<RelayMonitor>,
+    relay_task: Option<tokio::task::JoinHandle<()>>,
     notification_stop: Option<watch::Sender<bool>>,
     receiver_stop: Option<watch::Sender<bool>>,
     announcement: Option<Announcement>,
@@ -122,6 +128,9 @@ struct Ui {
     package: gtk::Entry,
     app_names: gtk::StringList,
     app_cache: Rc<RefCell<Vec<PhoneApp>>>,
+    relay_toggle: gtk::Button,
+    relay_open: gtk::Button,
+    relay_status: gtk::Label,
     width: gtk::SpinButton,
     height: gtk::SpinButton,
     density: gtk::SpinButton,
@@ -423,6 +432,17 @@ impl Ui {
         let load_apps = button("加载最近应用", false);
         let open_app = button("打开独立 App", true);
         apps.append(&actions(&[&load_apps, &open_app]));
+        let relay_toggle = button("开启应用接力", false);
+        let relay_open = button("打开接力内容", true);
+        relay_open.set_sensitive(false);
+        apps.append(&actions(&[&relay_toggle, &relay_open]));
+        let relay_status =
+            gtk::Label::new(Some("应用接力未开启：先在“我的设备”连接手机或开启近场后台"));
+        relay_status.set_xalign(0.0);
+        relay_status.set_wrap(true);
+        relay_status.add_css_class("dim-label");
+        relay_status.add_css_class("caption");
+        apps.append(&relay_status);
         desktop.append(&apps);
         stack.add_titled(&desktop_page, Some("desktop"), "桌面与应用");
 
@@ -615,6 +635,9 @@ impl Ui {
             package,
             app_names,
             app_cache,
+            relay_toggle: relay_toggle.clone(),
+            relay_open: relay_open.clone(),
+            relay_status,
             width,
             height,
             density,
@@ -718,6 +741,12 @@ impl Ui {
         });
         click!(open_app, u, {
             u.open_screen(true);
+        });
+        click!(relay_toggle, u, {
+            u.toggle_relay();
+        });
+        click!(relay_open, u, {
+            u.open_relay();
         });
         click!(local_capture, u, {
             let dialog = gtk::FileDialog::builder().title("打开本地媒体").build();
@@ -1256,6 +1285,90 @@ impl Ui {
         });
     }
 
+    fn toggle_relay(&self) {
+        if self.model.borrow().relay.is_some() {
+            self.stop_relay();
+            return;
+        }
+        let Some(session) = self.session() else {
+            return;
+        };
+        self.relay_status.set_text("正在开启应用接力…");
+        self.relay_toggle.set_sensitive(false);
+        self.run_session("开启应用接力", async move {
+            Ok(Event::RelayStarted(session.relay_monitor().await))
+        });
+    }
+
+    fn stop_relay(&self) {
+        let (monitor, task) = {
+            let mut model = self.model.borrow_mut();
+            (model.relay.take(), model.relay_task.take())
+        };
+        if let Some(task) = task {
+            task.abort();
+        }
+        if let Some(monitor) = monitor {
+            self.runtime.spawn(async move {
+                monitor.close().await;
+            });
+            self.append_log("应用接力已停止");
+        }
+        self.relay_toggle.set_label("开启应用接力");
+        self.relay_toggle.set_sensitive(true);
+        self.relay_open.set_sensitive(false);
+        self.relay_status
+            .set_text("应用接力未开启：先在“我的设备”连接手机或开启近场后台");
+    }
+
+    fn open_relay(&self) {
+        let Some(monitor) = self.model.borrow().relay.clone() else {
+            self.error("请先开启应用接力");
+            return;
+        };
+        let Some(session) = self.session() else {
+            return;
+        };
+        let options = AppOptions {
+            width: self.width.value_as_int() as u32,
+            height: self.height.value_as_int() as u32,
+            density: self.density.value_as_int() as u32,
+            ..Default::default()
+        };
+        let audio = self.audio.is_active();
+        let audio_device = self.audio_device.text().trim().to_owned();
+        self.run_session("打开应用接力", async move {
+            match monitor.open(options).await {
+                Ok(RelayOpened::App(screen)) => {
+                    let cfg = screen.configuration();
+                    match MediaPlayer::play_screen(
+                        session.local_ip(),
+                        cfg.phone_ip,
+                        cfg.port,
+                        PlaybackOptions {
+                            audio,
+                            audio_device,
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    {
+                        Ok(mut player) => {
+                            player.follow_screen_audio(&screen, Some(Default::default()))?;
+                            Ok(Event::Screen(screen, player))
+                        }
+                        Err(error) => {
+                            let _ = screen.close().await;
+                            Err(error)
+                        }
+                    }
+                }
+                Ok(other) => Ok(Event::RelayOpened(Ok(other))),
+                Err(error) => Ok(Event::RelayOpened(Err(error))),
+            }
+        });
+    }
+
     fn toggle_clipboard(&self, enabled: bool) {
         if enabled {
             if self.model.borrow().clipboard_pending || self.model.borrow().clipboard.is_some() {
@@ -1623,8 +1736,10 @@ impl Ui {
                 }
                 match result {
                     Ok(account) => {
-                        self.account_status
-                            .set_text("本机证书已加载并校验 · OTHER_PC21");
+                        self.account_status.set_text(&format!(
+                            "本机证书已加载并校验 · device_type {}",
+                            account.device_type
+                        ));
                         self.model.borrow_mut().account = Some(account);
                         self.append_log("本机身份已准备好");
                     }
@@ -1842,6 +1957,7 @@ impl Ui {
                 self.append_log("账号认证与 Networking 上线完成");
             }
             Event::Disconnected => {
+                self.stop_relay();
                 if self.model.borrow().session.is_some() && !self.model.borrow().disconnecting {
                     self.disconnect();
                     return;
@@ -1987,6 +2103,113 @@ impl Ui {
                     self.append_log(&format!("已加载 {} 个最近应用", names.len()));
                 }
                 Err(error) => self.error(&format!("加载应用列表：{error:#}")),
+            },
+            Event::RelayStarted(result) => match result {
+                Ok(monitor) => {
+                    let generation = self.model.borrow().generation;
+                    let mut events = monitor.subscribe();
+                    self.model.borrow_mut().relay = Some(monitor);
+                    let tx = self.tx.clone();
+                    let task = self.runtime.spawn(async move {
+                        while let Ok(event) = events.recv().await {
+                            let closed = matches!(event, RelayEvent::Closed(_));
+                            let _ = tx
+                                .send(Event::Notice(generation, Box::new(Event::Relay(event))))
+                                .await;
+                            if closed {
+                                break;
+                            }
+                        }
+                    });
+                    self.model.borrow_mut().relay_task = Some(task);
+                    self.relay_toggle.set_label("停止应用接力");
+                    self.relay_toggle.set_sensitive(true);
+                    self.relay_status
+                        .set_text("应用接力已开启，等待手机前台应用");
+                    self.append_log("应用接力已开启：等待 RelayApplication");
+                }
+                Err(error) => {
+                    self.relay_toggle.set_label("开启应用接力");
+                    self.relay_toggle.set_sensitive(true);
+                    self.relay_open.set_sensitive(false);
+                    self.relay_status.set_text("应用接力开启失败");
+                    self.error(&format!("开启应用接力：{error:#}"));
+                }
+            },
+            Event::Relay(event) => {
+                if self.model.borrow().relay.is_none() {
+                    return;
+                }
+                match event {
+                    RelayEvent::AppChanged(Some(app)) => {
+                        let name = if app.name.is_empty() {
+                            app.package.clone()
+                        } else {
+                            app.name.clone()
+                        };
+                        self.relay_status
+                            .set_text(&format!("应用接力：{name} · {}", app.package));
+                        self.relay_open.set_sensitive(true);
+                        self.append_log(&format!(
+                            "应用接力：当前 {} ({}) kind={:?} is_relay={} handoff={}",
+                            name, app.package, app.kind, app.is_relay, app.support_handoff
+                        ));
+                    }
+                    RelayEvent::AppChanged(None) => {
+                        self.relay_status.set_text("应用接力：等待手机前台应用");
+                        self.relay_open.set_sensitive(false);
+                        self.append_log("应用接力：手机当前应用已清空");
+                    }
+                    RelayEvent::Content(content) => {
+                        self.relay_status
+                            .set_text("应用接力：已收到内容，可点击“打开接力内容”");
+                        self.relay_open.set_sensitive(true);
+                        self.append_log(&format!("应用接力：收到 {content:?}"));
+                    }
+                    RelayEvent::Error(error) => {
+                        self.relay_status
+                            .set_text(&format!("应用接力错误：{error}"));
+                        self.error(&format!("应用接力：{error}"));
+                    }
+                    RelayEvent::Closed(reason) => {
+                        let (monitor, task) = {
+                            let mut model = self.model.borrow_mut();
+                            (model.relay.take(), model.relay_task.take())
+                        };
+                        if let Some(task) = task {
+                            task.abort();
+                        }
+                        if let Some(monitor) = monitor {
+                            self.runtime.spawn(async move {
+                                monitor.close().await;
+                            });
+                        }
+                        self.relay_toggle.set_label("开启应用接力");
+                        self.relay_toggle.set_sensitive(true);
+                        self.relay_open.set_sensitive(false);
+                        self.relay_status.set_text("应用接力通道已关闭");
+                        self.append_log(&format!("应用接力通道已关闭：{reason}"));
+                    }
+                }
+            }
+            Event::RelayOpened(result) => match result {
+                Ok(RelayOpened::External(target)) => {
+                    self.relay_status
+                        .set_text(&format!("应用接力：已在电脑打开 {target}"));
+                    self.append_log(&format!("应用接力：已在电脑打开 {target}"));
+                }
+                Ok(RelayOpened::File(path)) => {
+                    self.relay_status
+                        .set_text(&format!("应用接力：已打开 {}", path.display()));
+                    self.append_log(&format!("应用接力：已下载并打开 {}", path.display()));
+                }
+                Ok(RelayOpened::App(screen)) => {
+                    self.runtime.spawn(async move {
+                        let _ = screen.close().await;
+                    });
+                    self.error("应用接力：意外的独立屏幕结果");
+                }
+                Err(error) => self.error(&format!("打开应用接力：{error:#}")),
             },
             Event::Clipboard(clip, monitor) => {
                 self.model.borrow_mut().clipboard_pending = false;
@@ -2245,6 +2468,11 @@ impl Ui {
         }
         let clip = model.clipboard.take();
         let monitor = model.selection.take();
+        let relay = model.relay.take();
+        let relay_task = model.relay_task.take();
+        if let Some(task) = relay_task {
+            task.abort();
+        }
         let session = model.session.take();
         let nearby = if quit {
             model.nearby_generation += 1;
@@ -2263,6 +2491,11 @@ impl Ui {
             (None, None)
         };
         drop(model);
+        self.relay_toggle.set_label("开启应用接力");
+        self.relay_toggle.set_sensitive(true);
+        self.relay_open.set_sensitive(false);
+        self.relay_status
+            .set_text("应用接力未开启：先在“我的设备”连接手机或开启近场后台");
         self.update_nearby_controls();
         self.clipboard_switch.set_active(false);
         self.clipboard_switch.set_sensitive(false);
@@ -2290,6 +2523,9 @@ impl Ui {
                 }
                 if let Some(clip) = clip {
                     let _ = clip.close().await;
+                }
+                if let Some(relay) = relay {
+                    relay.close().await;
                 }
                 if let Some(session) = session {
                     if let Err(error) = session.close().await {
@@ -2338,6 +2574,12 @@ async fn dispose_event(event: Event) {
         Event::Clipboard(clip, monitor) => {
             let _ = monitor.stop().await;
             let _ = clip.close().await;
+        }
+        Event::RelayStarted(Ok(monitor)) => {
+            monitor.close().await;
+        }
+        Event::RelayOpened(Ok(RelayOpened::App(screen))) => {
+            let _ = screen.close().await;
         }
         Event::Transfer(task) => {
             task.cancel();

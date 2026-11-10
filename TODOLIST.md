@@ -7,6 +7,9 @@
 - [x] Rust core、GTK4 测试界面、libav 解码及日志落盘。
 - [x] 主账号扫码登录、证书加载与同账号认证。
 - [x] 局域网和 BLE 发现、电脑主动连接、手机主动连接及后台监听。
+- [x] GUI 近场后台补齐 LAN mDNS 公告，并修正 LAN 入站被误当成 BLE 会话去升级 P2P 的问题。
+- [x] 重新签发 Windows 类型 4 身份，修复手机融合设备中心/投送列表过滤 device_type=21 的问题。
+- [x] QuickConnect 内层 Logical 帧解析与 SDK peer channel id 修正，CAST 通道可收发 RelayApplication。
 - [x] 无共同局域网的 Wi-Fi Direct 建链、断开与重连。
 - [x] 桌面及多 App 投屏、键鼠/触摸板控制、中文输入、关闭重开。
 - [x] 关闭投屏窗口保留近场连接。
@@ -14,6 +17,8 @@
 - [x] 手机→电脑文件自动接收，快速建链修复已真机通过。
 - [x] 手机相机流转与预览。
 - [x] 官方最近应用列表及图标核心接口（目前最多四项）。
+- [x] 应用接力核心：CAST 通道监听 RelayApplication/浏览器/WPS/AppIntent，状态事件、接收确认和本地打开（待真机）。
+- [x] 桌面与应用页加入“开启应用接力/打开接力内容”按钮和状态显示。
 - [x] Core 分层重构：common/protocol/identity/transport/session/features/media，公共 API 根导出。
 - [x] 协议消息层重写：类型化 Lyra/Mirror/SDK/文件/剪贴板/通知/Auth/Upgrade 消息；session 按职责拆分，移除 mirror/lyra 双模型。
 - [x] Core 重写完成，进入真机回归阶段；协议字节、连接顺序、服务名和字段号按基线保留。
@@ -21,6 +26,7 @@
 
 ## 已实现，待真机确认
 
+- [ ] 应用接力真机复验（手机先在“允许手机主动连接”中连入，再开启接力；切换微信/浏览器/WPS，检查 `[relay]` 日志、App 窗口和本地打开）。
 - [ ] 电脑→手机文件发送复验。
 - [ ] 图片、文件、HTML 剪贴板同步。
 - [ ] 手机→电脑通知的授权及完整接收流程。

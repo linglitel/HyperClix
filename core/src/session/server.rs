@@ -86,8 +86,10 @@ impl Server {
                         local_ip: options.local_ip,
                         name: options.connection.device_name.clone(),
                         // Lyra authenticates the certificate against this discovery identity.
-                        device_type: account
+                        device_type: options
+                            .connection
                             .device_type
+                            .unwrap_or(account.device_type)
                             .try_into()
                             .context("设备类型超出公告字段范围")?,
                         kcp_port: Some(address.port()),
@@ -100,7 +102,16 @@ impl Server {
             None
         };
         let mut ble = if let Some(ble) = &options.ble {
-            Some(BleListener::start(account, ble.clone()).await?)
+            let mut ble = ble.clone();
+            if ble.device_type.is_none() {
+                ble.device_type = Some(
+                    options
+                        .connection
+                        .device_type
+                        .unwrap_or(account.device_type),
+                );
+            }
+            Some(BleListener::start(account, ble).await?)
         } else {
             None
         };

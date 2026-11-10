@@ -19,7 +19,7 @@ core/src/
   identity/             账号、扫码登录、证书
   transport/            KCP、认证、BLE、P2P、mDNS
   session/              一条手机连接、Channel、入站 Server
-  features/             desktop / apps / camera / clipboard / files / mishare / notifications
+  features/             desktop / apps / relay / camera / clipboard / files / mishare / notifications
   media/                libav、ALSA、v4l2、WFD
   bin/                  hyperclix-service、hyperclix-p2p-helper
 ```
@@ -49,6 +49,7 @@ use hyperclix_core::clipboard::Clipboard;
 | `proximity` | `NearbyScanner`、`BleListener`、`Session::connect_ble`、`UpgradeClient` | BlueZ 近场发现、主动/被动认证、Wi-Fi Direct 建链 |
 | `desktop` | `Session::open_desktop`、`open_app`、`Screen`、`Screen::drop_files` | App 包名及画布；输入、尺寸、音频、拖入文件 |
 | `apps` | `Session::recent_apps` | 官方最近应用列表，含包名、名称和图标，当前最多四项 |
+| `relay` | `Session::relay_monitor`、`RelayMonitor::state/subscribe/open` | CAST 通道中的应用接力：当前 App、浏览器 URL、WPS 文件和 App Intent；自动确认数据接收 |
 | `clipboard` | `Clipboard::open_with_cache`、`publish`、`subscribe` | 缓存目录；文本、HTML、图片和文件 |
 | `mishare` | `MiShare::send_files`、`receive_files` | 文件列表或接收目录；返回可取消的传输任务 |
 | `notifications` | `configure`、`subscribe_cloud`、`register_push`、`NotificationReceiver` | 手机应用包名、云授权、推送身份；接收手机通知 |
@@ -66,6 +67,9 @@ App 默认 720×1280、density 320；相机默认后置 1280×720；音频设备
 无局域网后台使用 `--listen-ble`；`--apps <手机IPv4>` 读取局域网手机的最近应用。
 `--nearby` 扫描 BLE；`--ble-connect` 连接唯一同账号近场设备，均不需要 IPv4。
 P2P 使用 `--p2p-interface wlp1s0` 选择无线接口；加 `--recent-apps` 在建链后读取最近应用，`--reconnect` 允许按回车关闭并重新认证、协商 P2P。
+应用接力监听：`--ble-connect --p2p-interface wlp1s0 --relay`、`--interface wlp1s0 --apps <手机IPv4> --relay`，
+或在后台 `--interface wlp1s0 --relay` 对每台被动连入的手机启动监听；
+加 `--relay-open` 时收到内容后自动打开（浏览器 URL 用 `xdg-open`，WPS 文件下载到缓存后打开，普通 App 打开独立投屏）。
 P2P 权限助手 `hyperclix-p2p-helper` 与宿主放在同一目录；系统授权后管理自有接口及独立 wpa_supplicant，退出时恢复原 P2P 管理状态。
 库调用先创建 `UpgradeClient`，把其 `capabilities()` 放入 `ConnectOptions.wifi_capabilities`，再进行 BLE 认证和 `upgrade()`。
 `follow_screen_audio` 的原始音量范围由调用方指定；当前手机使用 `0..150`，不修改电脑系统音量。

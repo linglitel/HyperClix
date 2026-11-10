@@ -167,7 +167,7 @@ impl PhysicalActor {
             let reply = ChannelControl::peer_port_response(request_id, c.sdk_id, port);
             self.queue_on(
                 c.physical,
-                &sdk::wrap(c.remote, &c.auth.encrypt(&reply.encode())?),
+                &sdk::wrap(c.peer_local, &c.auth.encrypt(&reply.encode())?),
             )?;
             self.phase(&format!(
                 "入站 SDK 端口重复请求，沿用 full={} service={} port={port}",
@@ -236,7 +236,7 @@ impl PhysicalActor {
         let reply = ChannelControl::peer_port_response(request_id, c.sdk_id, port);
         self.queue_on(
             c.physical,
-            &sdk::wrap(c.remote, &c.auth.encrypt(&reply.encode())?),
+            &sdk::wrap(c.peer_local, &c.auth.encrypt(&reply.encode())?),
         )?;
         self.phase(&format!(
             "入站 SDK 端口已响应：full={} service={} port={port}，等待关联",
@@ -253,24 +253,31 @@ impl PhysicalActor {
             c.physical,
             c.sdk_id,
             c.trans_key.len(),
-            c.remote
+            c.peer_local
         );
         let request =
             ChannelControl::peer_port_request(c.sdk_id as u64, c.full, c.trans_key.clone());
         let clear = request.encode();
-        tracing::info!(
+        tracing::debug!(
             target: "session",
             "[session] start_sdk clear bytes={} hex={}",
             clear.len(),
             hex::encode(&clear)
         );
         let encrypted = c.auth.encrypt(&clear)?;
-        let wrapped = sdk::wrap(c.remote, &encrypted);
-        tracing::info!(
+        let wrapped = sdk::wrap(
+            if c.peer_local != 0 {
+                c.peer_local
+            } else {
+                c.remote
+            },
+            &encrypted,
+        );
+        tracing::debug!(
             target: "session",
             "[session] start_sdk wrapped bytes={} slot={} head={}",
             wrapped.len(),
-            c.remote,
+            c.peer_local,
             hex::encode(&wrapped[..wrapped.len().min(32)])
         );
         self.queue_on(c.physical, &wrapped)

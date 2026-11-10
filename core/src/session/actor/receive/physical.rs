@@ -78,6 +78,7 @@ impl PhysicalActor {
             physical_device(
                 self.session.account(),
                 &self.session.inner.options.device_name,
+                self.session.account().device_type,
                 crate::session::MEDIUM_LAN | self.transport.medium(),
                 self.session.inner.options.wifi_capabilities.as_ref(),
             ),
@@ -88,6 +89,11 @@ impl PhysicalActor {
         self.physical_ready = true;
         self.phase("入站 Physical 同步完成，等待同账号认证");
         if !sync.quick_connect.is_empty() {
+            tracing::debug!(
+                "[session] 入站 QuickConnect raw bytes={} hex={}",
+                sync.quick_connect.len(),
+                hex::encode(&sync.quick_connect)
+            );
             let root = Fields::decode(&sync.quick_connect)?;
             let private = root.message::<Fields>(2)?;
             self.phase(&format!(
@@ -96,7 +102,16 @@ impl PhysicalActor {
                 private.repeated_bytes(1).len()
             ));
             for data in private.repeated_bytes(1) {
-                let envelope = LogicalEnvelope::decode(data)?;
+                tracing::debug!(
+                    "[session] 入站 QuickConnect row bytes={} hex={}",
+                    data.len(),
+                    hex::encode(data)
+                );
+                let envelope = if data.first().is_some_and(|byte| byte >> 3 == 2) {
+                    LogicalEnvelope::decode(data)?
+                } else {
+                    LogicalEnvelope::decode_quick(data)?
+                };
                 self.receive_logical(envelope, physical_id).await?;
             }
         }

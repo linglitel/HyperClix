@@ -6,3 +6,4 @@ pub mod desktop;
 pub mod files;
 pub mod mishare;
 pub mod notifications;
+pub mod relay;

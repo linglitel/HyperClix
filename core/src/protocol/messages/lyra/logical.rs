@@ -172,6 +172,18 @@ impl LogicalEnvelope {
         pb::mesh(2, &outer.finish())
     }
 
+    /// QuickConnect stores the inner frame without the mesh/envelope wrappers.
+    pub(crate) fn decode_quick(data: &[u8]) -> Result<Self> {
+        let frame = Fields::decode(data)?;
+        Ok(Self {
+            local: frame.uint(1) as u8,
+            remote: frame.uint(2) as u8,
+            full: frame.uint(3) as u32,
+            encrypted: frame.uint(4) != 0,
+            body: frame.bytes(5).to_vec(),
+        })
+    }
+
     pub(crate) fn decode(data: &[u8]) -> Result<Self> {
         let (mesh_kind, payload) = pb::unmesh(data)?;
         ensure!(mesh_kind == 2, "expected Logical mesh kind 2");

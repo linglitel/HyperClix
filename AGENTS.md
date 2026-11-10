@@ -8,7 +8,7 @@
 - 剪贴板使用 universalClipboard；CAST 保留投屏，旧 CAST 文本能力默认关闭。
 - 通知范围是手机→电脑；远程互传、硬解和零拷贝暂不做。
 - 当前只补核心协议能力：BLE/P2P、被动连接与后台在线、App 列表/图标、投屏音量/焦点；前端拖放与通知点击交互跳过。
-- 使用现有自有账号和 OTHER_PC21 证书。SDK Linux3、MiShare Windows2 是平台枚举；入站 Lyra 公告身份与证书类型 21 一致。
+- 使用现有自有账号；证书/公告身份用 Windows 类型 4。手机融合设备中心会过滤 OTHER_PC21，投送列表也不显示 21。旧 OTHER_PC21 身份备份在 XDG 数据目录，不参与运行。SDK Linux3、MiShare Windows2 是平台枚举。
 - 凭据、剪贴板内容和个人数据保存在 XDG 目录（`$XDG_DATA_HOME/hyperclix`、`$XDG_CACHE_HOME/hyperclix`），不写入源码或聊天。
 - 日志位置：`$XDG_STATE_HOME/hyperclix/logs/`（默认 `~/.local/state/hyperclix/logs/`）。账号及推送状态在 `$XDG_DATA_HOME/hyperclix`。
 - 手机端点按当前网络重新发现；扫码、云登记和手机设置由用户明确操作。

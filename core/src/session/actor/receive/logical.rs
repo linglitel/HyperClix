@@ -42,6 +42,7 @@ impl PhysicalActor {
         } else {
             envelope.local
         };
+        connection.peer_local = envelope.local;
         let clear = if let Some(auth) = inline_auth {
             auth
         } else if envelope.encrypted {

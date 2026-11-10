@@ -252,7 +252,7 @@ impl Account {
         .await?;
         let device_path = directory.join("device.json");
         if !device_path.exists() {
-            let value = serde_json::json!({"device_id":format!("linux-{}",uuid::Uuid::new_v4().simple()),"device_type":21,"created_epoch":epoch_secs()});
+            let value = serde_json::json!({"device_id":format!("linux-{}",uuid::Uuid::new_v4().simple()),"device_type":4,"created_epoch":epoch_secs()});
             save_private(&device_path, &serde_json::to_vec_pretty(&value)?).await?;
         }
         let device: serde_json::Value =

@@ -40,6 +40,8 @@ const CHARACTERISTIC: &str = "org.bluez.GattCharacteristic1";
 pub struct BleListenerOptions {
     pub adapter: Option<String>,
     pub name: String,
+    /// Advertised Lyra device type; None follows the certificate type.
+    pub device_type: Option<u32>,
 }
 
 impl Default for BleListenerOptions {
@@ -47,6 +49,7 @@ impl Default for BleListenerOptions {
         Self {
             adapter: None,
             name: crate::DEFAULT_DEVICE_NAME.into(),
+            device_type: None,
         }
     }
 }
@@ -357,7 +360,10 @@ impl BleListener {
             .at(
                 advertisement.as_str(),
                 Advertisement {
-                    data: advertising_data(account)?,
+                    data: advertising_data(
+                        account,
+                        options.device_type.unwrap_or(account.device_type),
+                    )?,
                     name: options.name,
                     stop: stop.clone(),
                 },
@@ -465,10 +471,10 @@ impl Drop for BleListener {
     }
 }
 
-fn advertising_data(account: &Account) -> Result<Vec<u8>> {
+fn advertising_data(account: &Account, device_type: u32) -> Result<Vec<u8>> {
     let identity = hex::decode(account.short_id())?;
     ensure!(identity.len() == 4, "BLE公告需要4字节设备短ID");
-    let kind = u8::try_from(account.device_type).context("BLE设备类型超出字节范围")?;
+    let kind = u8::try_from(device_type).context("BLE设备类型超出字节范围")?;
     let mut data = vec![0, 1, kind];
     data.extend(identity);
     data.extend_from_slice(&Sha256::digest(account.uid.as_bytes())[..2]);

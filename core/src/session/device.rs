@@ -11,6 +11,7 @@ use openssl::{hash::MessageDigest, sign::Signer};
 pub(super) fn physical_device(
     account: &Account,
     name: &str,
+    device_type: u32,
     supported_medium: u64,
     wifi: Option<&WifiCapabilities>,
 ) -> PhysicalDevice {
@@ -18,7 +19,7 @@ pub(super) fn physical_device(
     PhysicalDevice {
         short_id: account.short_id().into_bytes(),
         account_id: account.account_id()[..4].as_bytes().to_vec(),
-        device_type: account.device_type as u64,
+        device_type: device_type as u64,
         name: name.into(),
         supported_medium,
         wifi_proto: wifi.map(WifiCapabilities::physical_proto),
@@ -28,12 +29,13 @@ pub(super) fn physical_device(
 pub(super) fn physical_sync(
     account: &Account,
     name: &str,
+    device_type: u32,
     medium: u64,
     wifi: Option<&WifiCapabilities>,
 ) -> PhysicalFrame {
     PhysicalFrame::sync_request(
         epoch_ms(),
-        physical_device(account, name, MEDIUM_LAN | medium, wifi),
+        physical_device(account, name, device_type, MEDIUM_LAN | medium, wifi),
         medium,
     )
 }

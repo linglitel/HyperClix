@@ -36,6 +36,8 @@ struct LogicalConnection {
     timeout_ms: u64,
     local: u8,
     remote: u8,
+    /// Peer's local logical id, used as the first byte of SDK wrappers.
+    peer_local: u8,
     full: u32,
     service: String,
     trust: u32,
@@ -76,6 +78,7 @@ impl LogicalConnection {
             timeout_ms,
             local,
             remote,
+            peer_local: 0,
             full,
             service,
             trust,
@@ -189,6 +192,7 @@ impl PhysicalActor {
                 &physical_sync(
                     self.session.account(),
                     &self.session.inner.options.device_name,
+                    self.session.account().device_type,
                     self.transport.medium(),
                     self.session.inner.options.wifi_capabilities.as_ref(),
                 )

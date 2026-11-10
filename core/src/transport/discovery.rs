@@ -389,6 +389,16 @@ pub struct Announcement {
 }
 impl Announcement {
     pub async fn start(account: &Account, options: AnnouncementOptions) -> Result<Self> {
+        tracing::info!(
+            "[mdns] announcement start: local_ip={} name={:?} device_type={} medium_type={} channel={} kcp_port={:?} interval={:?}",
+            options.local_ip,
+            options.name,
+            options.device_type,
+            options.medium_type,
+            options.channel,
+            options.kcp_port,
+            options.interval
+        );
         let socket = multicast_socket(options.local_ip, true)?;
         let (stop, mut stopped) = watch::channel(false);
         let mut id = [0; 4];
